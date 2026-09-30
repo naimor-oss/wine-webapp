@@ -6,7 +6,7 @@ Every entry is a `FIXME(remove-when-fixed)` in the sense of
 
 | # | Problem | Our fix | Where | Upstream |
 | --- | --- | --- | --- | --- |
-| 1 | Mouse stops working after clicking into a text field | Patched edit controls | fork `naimor/wine-11.0`, `comctl32_v6.dll`, `user32.dll` | bug not yet filed |
+| 1 | Mouse stops working after clicking into a text field | Patched edit controls | fork `naimor/wine-11.0`, `comctl32_v6.dll`, `user32.dll` | not filed; draft in [`upstream/`](upstream/wine-bug-edit-capture.md) |
 | 2 | Typed text invisible in text fields | Visual theme off | `rootfs-base/etc/wine-webapp/prefix.d/10-disable-visual-theme.reg` | bug not yet filed |
 
 ## How patches are carried
