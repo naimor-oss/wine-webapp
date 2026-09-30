@@ -1,0 +1,19 @@
+# macOS / SMB share crud
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Private local coding-agent workspaces and settings.
+.claude/
+.codex/
+.cursor/
+.continue/
+.aider*
+
+# Test transcripts are local evidence; keep distilled findings as .md.
+test-results/*.log
+
+# Build outputs
+dist/
+tools/*/*.exe

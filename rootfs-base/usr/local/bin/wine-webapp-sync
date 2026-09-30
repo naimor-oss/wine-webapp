@@ -1,0 +1,34 @@
+#!/bin/sh
+# wine-webapp-sync <from> <to>
+#
+# Copy an application's program files from the image into its working folder.
+# For apps that expect program and data files in one folder (common for older
+# line-of-business software), the data lives on a volume and the program files
+# are refreshed from the image on every start, so an image upgrade upgrades
+# the program without touching the data.
+#
+# - A file is replaced only when its content differs, via a temp file and a
+#   rename: another running instance (another user's container on the same
+#   volume) keeps its mapped copy of a DLL/EXE instead of seeing it truncated.
+# - Files matching APP_SYNC_KEEP (default: *.ini *.INI) are user settings and
+#   are copied only if missing.
+set -eu
+from=$1 to=$2
+keep=${APP_SYNC_KEEP:-*.ini *.INI}
+
+mkdir -p "$to"
+cd "$from"
+for f in *; do
+  [ -f "$f" ] || continue
+  dst="$to/$f"
+  skip=
+  for pat in $keep; do
+    # shellcheck disable=SC2254  # $pat is a glob on purpose
+    case $f in $pat) [ -e "$dst" ] && skip=1 ;; esac
+  done
+  [ -z "$skip" ] || continue
+  if ! cmp -s "$f" "$dst" 2>/dev/null; then
+    cp -p "$f" "$dst.sync.$$" && mv -f "$dst.sync.$$" "$dst"
+    echo "sync: $f"
+  fi
+done

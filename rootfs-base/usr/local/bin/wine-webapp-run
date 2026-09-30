@@ -1,0 +1,31 @@
+#!/bin/sh
+# Application supervisor, started by the front end as user webapp with DISPLAY
+# set. Runs APP_EXE inside a Wine virtual desktop the size of the display and
+# starts it again whenever it exits, so a user who quits (or a crash) gets a
+# fresh start screen on the next browser connect instead of an empty desktop.
+#
+# Contract: docs/app-contract.md
+set -eu
+: "${APP_EXE:?APP_EXE must be set (see docs/app-contract.md)}"
+
+case $APP_EXE in
+  /*) workdir=${APP_WORKDIR:-$(dirname "$APP_EXE")} ;;
+  *)  workdir=${APP_WORKDIR:-$HOME} ;;
+esac
+if [ -n "${APP_SYNC_FROM:-}" ]; then
+  wine-webapp-sync "$APP_SYNC_FROM" "$workdir"
+fi
+cd "$workdir"
+
+fails=0
+while :; do
+  start=$(date +%s)
+  # APP_ARGS is split on whitespace on purpose (simple argument lists only).
+  # shellcheck disable=SC2086
+  wine explorer /desktop=webapp,"$WEBAPP_SCREEN" "$APP_EXE" ${APP_ARGS:-}
+  wineserver -w
+  # Back off when it keeps dying right away (missing file, bad config), so a
+  # broken app doesn't spin.
+  if [ $(( $(date +%s) - start )) -lt 10 ]; then fails=$((fails + 1)); else fails=0; fi
+  sleep $(( fails > 5 ? 30 : 1 ))
+done

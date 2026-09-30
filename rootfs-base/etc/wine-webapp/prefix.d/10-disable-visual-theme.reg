@@ -1,0 +1,19 @@
+Windows Registry Editor Version 5.00
+
+; FIXME(remove-when-fixed): Wine's default "Light" visual theme.
+;
+; What is broken (seen with Wine 10.0 and 11.0): with the theme active, the
+; themed EDIT control's WM_NCPAINT fills the whole control, client area
+; included. Apps that draw an edit control's text themselves and then send
+; WM_NCPAINT (the Clarion runtime does, for every ENTRY field) get the text
+; painted over: typed characters are invisible although they are stored.
+;
+; Why this is safe: disabling the theme gives the classic look Wine used by
+; default before 9.0; nothing functional depends on it.
+;
+; How to remove: once the upstream fix is in the pinned Wine release (see
+; docs/wine-patches.md for the bug link), delete this file and check that
+; typed text shows up in the app's input fields.
+
+[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\ThemeManager]
+"ThemeActive"="0"

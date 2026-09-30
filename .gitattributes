@@ -1,0 +1,6 @@
+# Scripts and Dockerfiles run on Linux: always LF, whatever the checkout OS.
+* text=auto eol=lf
+# .reg files keep Windows line endings, as regedit writes them.
+*.reg text eol=crlf
+*.exe binary
+*.dll binary

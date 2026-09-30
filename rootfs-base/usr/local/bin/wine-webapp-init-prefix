@@ -1,0 +1,44 @@
+#!/bin/sh
+# Create the Wine prefix if needed, then apply the image's prefix hooks.
+# Idempotent: the base image runs it once, and an app image runs it again
+# (as user webapp) after adding its own hooks and fonts.
+#
+#   /etc/wine-webapp/prefix.d/*.reg     imported with regedit, in name order
+#   /etc/wine-webapp/prefix.d/*.sh      run with sh, in name order
+#   /etc/wine-webapp/fonts/*.ttf|otf|ttc
+#                                       copied to C:\windows\Fonts and
+#                                       registered under their family names
+set -eu
+
+if [ ! -f "$WINEPREFIX/system.reg" ]; then
+  wineboot --init
+  wineserver -w
+fi
+
+for f in /etc/wine-webapp/prefix.d/*; do
+  case $f in
+    *.reg) echo "prefix.d: import $f"; wine regedit /S "$f" ;;
+    *.sh)  echo "prefix.d: run $f"; sh "$f" ;;
+  esac
+done
+
+fontdir="$WINEPREFIX/drive_c/windows/Fonts"
+reg=$(mktemp --suffix=.reg)
+printf 'Windows Registry Editor Version 5.00\r\n\r\n' > "$reg"
+printf '[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts]\r\n' >> "$reg"
+nfonts=0
+for f in /etc/wine-webapp/fonts/*; do
+  case $f in *.[tT][tT][fF]|*.[oO][tT][fF]|*.[tT][tT][cC]) ;; *) continue ;; esac
+  b=$(basename "$f")
+  cp "$f" "$fontdir/$b"
+  # Windows registers fonts by full name; fall back to the file name.
+  name=$(fc-scan --format '%{fullname[0]}' "$f" 2>/dev/null || true)
+  [ -n "$name" ] || name=${b%.*}
+  printf '"%s (TrueType)"="%s"\r\n' "$name" "$b" >> "$reg"
+  echo "font: $b -> $name"
+  nfonts=$((nfonts + 1))
+done
+[ "$nfonts" -eq 0 ] || wine regedit /S "$reg"
+rm -f "$reg"
+
+wineserver -w

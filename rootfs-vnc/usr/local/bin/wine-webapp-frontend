@@ -1,0 +1,31 @@
+#!/bin/sh
+# noVNC front end (container entrypoint, runs as root under tini):
+#   Xvnc :1       virtual screen of WEBAPP_SCREEN, VNC on localhost:5901 only
+#   websockify    noVNC web client + WebSocket bridge on :8080
+#   wine-webapp-run   the app supervisor, in the foreground
+# Everything runs as user webapp. There is no VNC password: the VNC port is
+# not reachable from outside the container, and access control for :8080
+# belongs in the reverse proxy in front of it.
+set -eu
+export DISPLAY=:1
+
+# The working folder is usually a volume; make sure the app user owns it.
+if [ -n "${APP_WORKDIR:-}" ]; then
+  mkdir -p "$APP_WORKDIR"
+  chown webapp:webapp "$APP_WORKDIR"
+fi
+
+runuser -u webapp -- Xvnc :1 -geometry "$WEBAPP_SCREEN" -depth 24 -rfbport 5901 \
+  -localhost=1 -SecurityTypes None -AlwaysShared=1 -AcceptSetDesktopSize=0 \
+  >/tmp/xvnc.log 2>&1 &
+runuser -u webapp -- websockify --web /usr/share/novnc 0.0.0.0:8080 localhost:5901 \
+  >/tmp/websockify.log 2>&1 &
+
+i=0
+until [ -e /tmp/.X11-unix/X1 ]; do
+  i=$((i + 1))
+  if [ "$i" -gt 100 ]; then echo "Xvnc did not start:" >&2; cat /tmp/xvnc.log >&2; exit 1; fi
+  sleep 0.1
+done
+
+exec runuser -u webapp -- wine-webapp-run
