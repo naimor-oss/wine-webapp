@@ -1,0 +1,116 @@
+#!/usr/bin/python3
+"""noVNC web client, VNC WebSocket bridge and window list, on one port.
+
+    wine-webapp-gateway LISTEN_PORT VNC_PORT WEB_DIR
+
+websockify (as a library) serves WEB_DIR and bridges WebSocket connections to
+the VNC server on localhost:VNC_PORT, as the plain `websockify` command does.
+It adds the window list (docs/frontends.md, "Window list"):
+
+    GET  /api/windows              top-level windows a user can switch to, top first
+    POST /api/windows/HWND/raise   bring one to the front
+
+Both run winlist.exe once per request; nothing polls, and no Wine process stays
+running beside the app (wine-webapp-run waits for wineserver to exit to notice
+that the app has quit). Runs as user webapp, with DISPLAY and WINEPREFIX set.
+"""
+import json
+import logging
+import re
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+from websockify.websocketproxy import ProxyRequestHandler, WebSocketProxy
+
+WINLIST = ["wine", "/usr/local/lib/wine-webapp/winlist.exe"]
+RAISE = re.compile(r"^/api/windows/([0-9a-f]{1,16})/raise$")
+FIELDS = ("hwnd", "owner", "pid", "flags", "x", "y", "width", "height", "class", "title")
+
+
+def winlist(*args):
+    """Run winlist.exe; return its stdout, or raise RuntimeError."""
+    try:
+        r = subprocess.run(WINLIST + list(args), capture_output=True, timeout=20,
+                           text=True, encoding="cp1252", errors="replace")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("winlist timed out")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or "winlist exited with %d" % r.returncode)
+    return r.stdout
+
+
+def windows():
+    """Visible, titled, non-tool top-level windows, top of the z-order first."""
+    result = []
+    for line in winlist("-t").splitlines():
+        parts = line.split("\t")
+        if len(parts) != len(FIELDS):
+            continue
+        w = dict(zip(FIELDS, parts))
+        flags = w.pop("flags")
+        if "V" not in flags or "T" in flags or not w["title"].strip():
+            continue
+        result.append({
+            "hwnd": w["hwnd"],
+            "owner": None if int(w["owner"], 16) == 0 else w["owner"],
+            "pid": int(w["pid"]),
+            "title": w["title"],
+            "class": w["class"],
+            "enabled": "E" in flags,
+            "minimized": "I" in flags,
+            "maximized": "Z" in flags,
+            "rect": [int(w[k]) for k in ("x", "y", "width", "height")],
+        })
+    return result
+
+
+class Handler(ProxyRequestHandler):
+    def do_GET(self):
+        if urlsplit(self.path).path == "/api/windows":
+            try:
+                self.reply(200, {"windows": windows()})
+            except RuntimeError as e:
+                self.reply(503, {"error": str(e)})
+            return
+        super().do_GET()
+
+    def do_POST(self):
+        m = RAISE.match(urlsplit(self.path).path)
+        if not m:
+            self.reply(404, {"error": "not found"})
+            return
+        # A page from another site must not drive the app: browsers send
+        # Origin on cross-site POSTs. Access control itself is the reverse
+        # proxy's job (docs/frontends.md, "Contract for a front end"); a proxy
+        # that rewrites Host passes the original in X-Forwarded-Host.
+        origin = self.headers.get("Origin")
+        hosts = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
+        if origin and urlsplit(origin).netloc not in hosts:
+            self.reply(403, {"error": "cross-origin request"})
+            return
+        try:
+            winlist("raise", m.group(1))
+            self.reply(200, {"raised": m.group(1)})
+        except RuntimeError as e:
+            self.reply(409, {"error": str(e)})
+
+    def reply(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    listen_port, vnc_port, web = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+    WebSocketProxy(RequestHandlerClass=Handler, listen_host="0.0.0.0", listen_port=listen_port,
+                   target_host="localhost", target_port=vnc_port, web=web).start_server()
+
+
+if __name__ == "__main__":
+    main()

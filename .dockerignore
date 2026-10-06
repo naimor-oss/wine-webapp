@@ -1,7 +1,8 @@
 .git
 .claude
 examples
-tools
+tools/*
+!tools/winlist/winlist.c
 docs
 test-results
 dist

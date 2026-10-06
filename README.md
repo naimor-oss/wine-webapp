@@ -15,7 +15,7 @@ fixes we need but upstream hasn't shipped yet.
 | Choose or add a browser front end | [`docs/frontends.md`](docs/frontends.md) |
 | Know what we change in Wine, and why | [`docs/wine-patches.md`](docs/wine-patches.md) |
 | Check file locking across containers on a host | [`tools/locktest/`](tools/locktest/) |
-| Find or raise a window hidden behind others | [`tools/winlist/`](tools/winlist/) |
+| Find or raise a window hidden behind others | The "Windows" button in the browser ([`docs/frontends.md`](docs/frontends.md)); [`tools/winlist/`](tools/winlist/) underneath |
 | Work on this repo as an agent | [`AGENTS.md`](AGENTS.md) |
 
 ## Quick start
@@ -32,6 +32,14 @@ fork, [`Naimor-OSS/wine`](https://github.com/Naimor-OSS/wine). To build from a
 local checkout of the fork instead, add
 `--build-context winesrc=../wine`.
 
+The images are `linux/amd64` and need an x86-64 Docker host. On Apple Silicon
+the build fails at the first Wine start (`wine-webapp-init-prefix`), seen
+2026-10-05 with Wine 11.0: OrbStack 2.2.3 runs Wine under QEMU, which aborts
+(`anon_mmap_fixed: Assertion ... host_page_mask` failed); Apple's `container`
+1.4.1 runs it under Rosetta, which aborts in `rt_sigreturn`
+(`x86_avx_state_ptr->xsave_header.xfeatures`). Everything else in the image
+(Xvnc, the gateway) runs there.
+
 ## Related repositories
 
 - [`Naimor-OSS/wine`](https://github.com/Naimor-OSS/wine): our Wine fork, one
@@ -43,13 +51,13 @@ local checkout of the fork instead, add
 
 | Path | Purpose |
 | --- | --- |
-| `Dockerfile` | Targets `winedlls` (patched Wine DLLs), `base` (Wine + app contract), `vnc` (front end) |
+| `Dockerfile` | Targets `winedlls` (patched Wine DLLs), `tools` (helpers under Wine), `base` (Wine + app contract), `vnc` (front end) |
 | `build/build-wine-dlls.sh` | Builds only the patched 32-bit Wine modules from the fork |
 | `rootfs-base/` | App contract scripts and default prefix hooks |
-| `rootfs-vnc/` | TigerVNC + noVNC front end |
+| `rootfs-vnc/` | TigerVNC + noVNC front end, gateway with the window list |
 | `examples/notepad/` | Smallest app image; also the smoke test |
 | `tools/locktest/` | Cross-container Windows file-lock test |
-| `tools/winlist/` | List / raise windows on the Wine desktop |
+| `tools/winlist/` | List / raise windows on the Wine desktop; built into the image |
 | `docs/` | Contract, front ends, Wine patches |
 
 ## Status

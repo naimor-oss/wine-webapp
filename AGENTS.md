@@ -45,5 +45,9 @@ base
 docker build --target vnc -t wine-webapp:vnc .           # or with --build-context winesrc=../wine
 docker build -t wine-webapp-example-notepad examples/notepad
 docker run --rm -p 8080:8080 wine-webapp-example-notepad  # then use it from a browser
-sh -n rootfs-base/usr/local/bin/wine-webapp-* rootfs-vnc/usr/local/bin/wine-webapp-*
+sh -n rootfs-base/usr/local/bin/wine-webapp-* rootfs-vnc/usr/local/bin/wine-webapp-frontend
+python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" rootfs-vnc/usr/local/bin/wine-webapp-gateway
 ```
+
+Wine needs an x86-64 Docker host; on Apple Silicon it aborts under both QEMU
+and Rosetta (see `README.md`, "Quick start").

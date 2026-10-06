@@ -3,6 +3,7 @@
 # wine-webapp: run one Windows desktop application under Wine and serve it to
 # a web browser. Targets:
 #   winedlls  patched Wine DLLs built from our Wine fork (see docs/wine-patches.md)
+#   tools     helper programs run under Wine (tools/), e.g. the window list
 #   base      Wine + app contract (docs/app-contract.md), no display
 #   vnc       base + TigerVNC/noVNC front end (docs/frontends.md)
 #
@@ -37,6 +38,11 @@ COPY build/build-wine-dlls.sh /usr/local/bin/build-wine-dlls
 RUN --mount=from=winesrc,target=/src/wine \
     sh /usr/local/bin/build-wine-dlls /src/wine /out $WINE_PATCHED_DLLS
 
+# --- helper programs run under Wine (same mingw toolchain)
+FROM winedlls AS tools
+COPY tools/winlist/winlist.c /src/
+RUN mkdir -p /out && i686-w64-mingw32-gcc -O2 -Wall -o /out/winlist.exe /src/winlist.c
+
 # --- base: Wine + app contract
 FROM ${DEBIAN} AS base
 ARG WINE_PKG
@@ -58,6 +64,7 @@ RUN dpkg --add-architecture i386 \
  && apt-get purge -y gnupg wget && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 COPY --from=winedlls /out/ /opt/wine-stable/lib/wine/i386-windows/
+COPY --from=tools /out/winlist.exe /usr/local/lib/wine-webapp/
 
 RUN useradd -m -u 1000 -s /bin/bash webapp
 ENV PATH=/opt/wine-stable/bin:$PATH \

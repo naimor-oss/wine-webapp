@@ -1,5 +1,133 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Loading</title>
-<!-- Open the noVNC client connected, scaled to the window, reconnecting on its own. -->
-<meta http-equiv="refresh" content="0; url=vnc.html?autoconnect=1&amp;resize=scale&amp;reconnect=1&amp;reconnect_delay=1000&amp;show_dot=1">
+<!--
+  The stock noVNC client (vnc.html: connected, scaled to the window,
+  reconnecting on its own), plus a window list: the Wine virtual desktop has
+  no taskbar, so a window that ends up behind a maximized one is otherwise
+  unreachable. The list comes from the gateway's /api/windows, fetched only
+  while the panel is open. See docs/frontends.md, "Window list".
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #333; }
+  #vnc { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  #win-button {
+    position: absolute; top: 6px; right: 6px; z-index: 2;
+    font: 13px system-ui, sans-serif; color: #fff; background: rgba(40, 40, 40, .75);
+    border: 1px solid rgba(255, 255, 255, .35); border-radius: 4px; padding: 4px 10px;
+    cursor: pointer; opacity: .6;
+  }
+  #win-button:hover, #win-button[aria-expanded="true"] { opacity: 1; }
+  #win-panel {
+    position: absolute; top: 36px; right: 6px; z-index: 2; min-width: 260px; max-width: 60vw;
+    max-height: 70vh; overflow: auto; font: 13px system-ui, sans-serif; color: #111;
+    background: #fff; border: 1px solid #888; border-radius: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  }
+  #win-panel[hidden] { display: none; }
+  #win-panel ul { list-style: none; margin: 0; padding: 4px 0; }
+  #win-panel button {
+    display: block; width: 100%; text-align: left; font: inherit; color: inherit;
+    background: none; border: 0; padding: 6px 12px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #win-panel button:hover, #win-panel button:focus { background: #dbe8ff; outline: none; }
+  #win-panel .owned { padding-left: 28px; }
+  #win-panel .waiting { color: #777; }
+  #win-panel .note { padding: 8px 12px; color: #555; }
+</style>
+<iframe id="vnc" title="Application" src="vnc.html?autoconnect=1&amp;resize=scale&amp;reconnect=1&amp;reconnect_delay=1000&amp;show_dot=1"></iframe>
+<button id="win-button" type="button" aria-expanded="false" aria-controls="win-panel">Windows</button>
+<div id="win-panel" hidden></div>
+<script>
+"use strict";
+const frame = document.getElementById("vnc");
+const button = document.getElementById("win-button");
+const panel = document.getElementById("win-panel");
+
+// Keyboard input reaches the app only while noVNC's canvas has focus; using
+// the panel takes focus away, so hand it back whenever the panel closes.
+function focusApp() {
+  frame.focus();
+  const canvas = frame.contentDocument && frame.contentDocument.querySelector("#noVNC_container canvas");
+  if (canvas) canvas.focus();
+}
+
+function hidePanel() {
+  panel.hidden = true;
+  button.setAttribute("aria-expanded", "false");
+}
+
+function closePanel() {
+  hidePanel();
+  focusApp();
+}
+
+function note(text) {
+  panel.replaceChildren(Object.assign(document.createElement("div"), { className: "note", textContent: text }));
+}
+
+// A disabled window is waiting for a dialog: raising it alone shows nothing
+// useful, so raise the dialog it owns instead, when there is one in the list.
+function target(w, all) {
+  if (w.enabled) return w.hwnd;
+  const dialog = all.find(d => d.owner === w.hwnd && d.enabled);
+  return dialog ? dialog.hwnd : w.hwnd;
+}
+
+async function raise(hwnd) {
+  try {
+    const r = await fetch("api/windows/" + hwnd + "/raise", { method: "POST" });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    closePanel();
+  } catch (e) {
+    note("Could not bring the window forward: " + e.message);
+  }
+}
+
+async function openPanel() {
+  panel.hidden = false;
+  button.setAttribute("aria-expanded", "true");
+  note("Loading…");
+  let windows;
+  try {
+    const r = await fetch("api/windows", { cache: "no-store" });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || r.statusText);
+    windows = body.windows;
+  } catch (e) {
+    note("Window list unavailable: " + e.message);
+    return;
+  }
+  if (!windows.length) { note("No windows open."); return; }
+  const list = document.createElement("ul");
+  for (const w of windows) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = w.title + (w.minimized ? " (minimized)" : "") + (w.enabled ? "" : " (waiting for a dialog)");
+    item.title = w.title;
+    if (w.owner) item.classList.add("owned");
+    if (!w.enabled) item.classList.add("waiting");
+    item.addEventListener("click", () => raise(target(w, windows)));
+    const li = document.createElement("li");
+    li.append(item);
+    list.append(li);
+  }
+  panel.replaceChildren(list);
+  list.querySelector("button").focus();
+}
+
+button.addEventListener("click", () => panel.hidden ? openPanel() : closePanel());
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !panel.hidden) closePanel(); });
+// A click into the app (inside the iframe) moves focus out of this page.
+window.addEventListener("blur", () => { if (!panel.hidden) hidePanel(); });
+
+// Show noVNC's title (the connection state) as this page's title.
+frame.addEventListener("load", () => {
+  const doc = frame.contentDocument;
+  const copy = () => { document.title = doc.title; };
+  copy();
+  const title = doc.querySelector("title");
+  if (title) new MutationObserver(copy).observe(title, { childList: true, characterData: true, subtree: true });
+});
+</script>
