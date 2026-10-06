@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+; ClearType on, as on Windows, to match the fontconfig setting in
+; /etc/fonts/conf.d/99-wine-webapp-cleartype.conf (which is what Wine uses to
+; draw), for programs that ask whether smoothing is on. Gamma 1400 is the
+; Windows default. See docs/app-contract.md, "Text".
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"FontSmoothing"="2"
+"FontSmoothingType"=dword:00000002
+"FontSmoothingGamma"=dword:00000578
+"FontSmoothingOrientation"=dword:00000001

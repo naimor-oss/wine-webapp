@@ -8,6 +8,7 @@ what the base does with it.
 | Write a Dockerfile for a new app | [Minimal app image](#minimal-app-image) |
 | Know which variables exist | [Runtime variables](#runtime-variables) |
 | Add fonts or registry settings | [Build-time hooks](#build-time-hooks) |
+| Change how text is drawn | [Text](#text) |
 | Keep data on a volume | [Program and data in one folder](#program-and-data-in-one-folder) |
 | Know what happens when the app exits | [Supervision](#supervision) |
 
@@ -71,6 +72,24 @@ The base ships `prefix.d/10-disable-visual-theme.reg`, a workaround for a Wine
 bug (see [`wine-patches.md`](wine-patches.md)). An app image that does not need
 it can delete it before running `wine-webapp-init-prefix`, but the theme
 setting already applied by the base stays until overridden.
+
+## Text
+
+The base draws text with ClearType (subpixel smoothing) at every size, as
+Windows does by default: `/etc/fonts/conf.d/99-wine-webapp-cleartype.conf`,
+with `prefix.d/20-cleartype.reg` saying so to programs that ask. Wine takes
+each font's smoothing from fontconfig rather than from the registry, and it
+obeys a font's "no smoothing at small sizes" table (`gasp`) for grayscale
+smoothing but not for subpixel smoothing. With Debian's grayscale default,
+8-10pt text came out unsmoothed (tested 2026-10-05 with Arial and Tahoma). An
+app image that wants plain pixels deletes both files.
+
+Fonts: Wine brings Tahoma and bitmap fonts (MS Sans Serif, Small Fonts,
+System); the base adds Liberation, which fontconfig gives to Arial,
+Microsoft Sans Serif, Segoe UI and the like. Liberation's hinting is poor at
+small sizes. An app image that names Microsoft fonts can install the real ones
+(Debian's `ttf-mscorefonts-installer` has Arial, Times New Roman, Courier New,
+Verdana), under their licence; the base doesn't ship them.
 
 ## Program and data in one folder
 
