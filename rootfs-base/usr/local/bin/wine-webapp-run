@@ -18,14 +18,49 @@ if [ -n "${APP_SYNC_FROM:-}" ]; then
 fi
 cd "$workdir"
 
+# PID of the running wineserver, if any.
+server_pid() {
+  for p in /proc/[0-9]*; do
+    [ "$(cat "$p/comm" 2>/dev/null)" = wineserver ] && { echo "${p#/proc/}"; return 0; }
+  done
+  return 0  # none (yet); set -e must not end the script here
+}
+
+# If wineserver dies (it crashed with a divide error on a screen resize,
+# 2026-10-05), every Wine process blocks on it for good, the app and the
+# explorer launcher included, so waiting for them never returns and the user
+# sees a frozen or black screen. Watch the server the app started with; when
+# it is gone, kill what is left of the app so the loop restarts it.
+watch_server() {
+  app=$1 server=
+  while kill -0 "$app" 2>/dev/null; do
+    if [ -z "$server" ]; then
+      server=$(server_pid)
+    elif [ ! -d "/proc/$server" ]; then
+      echo "wine-webapp-run: wineserver $server died; restarting the app" >&2
+      for p in /proc/[0-9]*; do
+        # Wine processes show as their .exe name (not the gateway or this script)
+        case $(cat "$p/comm" 2>/dev/null) in
+          *.exe|wine|wine64|wine-preloader|wine64-preloader) kill -9 "${p#/proc/}" 2>/dev/null || true ;;
+        esac
+      done
+      return
+    fi
+    sleep 2
+  done
+}
+
 fails=0
 while :; do
   start=$(date +%s)
   # APP_ARGS is split on whitespace on purpose (simple argument lists only).
   # shellcheck disable=SC2086
+  wine explorer /desktop=webapp,"${WEBAPP_DESKTOP_SIZE:-$WEBAPP_SCREEN}" "$APP_EXE" ${APP_ARGS:-} &
+  launcher=$!
+  watch_server "$launcher"
   # A crash or an abort exits non-zero: a reason to restart, not to end the
   # container, as set -e would.
-  wine explorer /desktop=webapp,"${WEBAPP_DESKTOP_SIZE:-$WEBAPP_SCREEN}" "$APP_EXE" ${APP_ARGS:-} || true
+  wait "$launcher" 2>/dev/null || true
   wineserver -w || true
   # Back off when it keeps dying right away (missing file, bad config), so a
   # broken app doesn't spin.
