@@ -87,6 +87,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       tigervnc-standalone-server novnc python3-websockify hsetroot \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
+# The screen follows the browser window (remote) between the minimum and the
+# maximum, or stays WEBAPP_SCREEN and is scaled (scale); docs/frontends.md.
+ENV WEBAPP_RESIZE=remote WEBAPP_SCREEN_MIN=1024x700 WEBAPP_SCREEN_MAX=3840x2160
 COPY rootfs-vnc/ /
 RUN sed -i 's/\r$//' /usr/local/bin/wine-webapp-* && chmod +x /usr/local/bin/wine-webapp-*
 EXPOSE 8080

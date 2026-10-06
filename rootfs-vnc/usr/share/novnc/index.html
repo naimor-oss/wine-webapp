@@ -5,28 +5,37 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <!--
-  The stock noVNC client (vnc.html: connected, scaled to the window,
-  reconnecting on its own), plus a window list: the Wine virtual desktop has
-  no taskbar, so a window that ends up behind a maximized one is otherwise
-  unreachable. The list comes from the gateway's /api/windows, fetched only
-  while the panel is open. See docs/frontends.md, "Window list".
+  The stock noVNC client (vnc.html: connected, reconnecting on its own), plus
+  a window list: the Wine virtual desktop has no taskbar, so a window that
+  ends up behind a maximized one is otherwise unreachable. The list comes from
+  the gateway's /api/windows, fetched only while the panel is open. See
+  docs/frontends.md, "Window list".
 
-  The manifest lets a browser install the page as an app with its own window;
-  that window opens at the screen's size, so it shows unscaled. See
-  docs/frontends.md, "Installed as an app".
+  The screen follows the window (WEBAPP_RESIZE=remote): noVNC asks Xvnc for a
+  screen the size of the window, and this page then asks the gateway to fit
+  the Wine desktop to it. Or it is fixed and scaled (scale). See
+  docs/frontends.md, "Screen size".
+
+  The manifest lets a browser install the page as an app with its own window.
+  See docs/frontends.md, "Installed as an app".
 -->
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #333; }
-  #vnc { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  /* remote: below the minimum screen size the page scrolls instead */
+  body.remote { overflow: auto; }
+  #vnc { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; display: block; }
+  /* Top centre, over the app's title bar: the top right corner holds a
+     maximized window's minimize, maximize and close buttons. */
   #win-button {
-    position: absolute; top: 6px; right: 6px; z-index: 2;
-    font: 13px system-ui, sans-serif; color: #fff; background: rgba(40, 40, 40, .75);
-    border: 1px solid rgba(255, 255, 255, .35); border-radius: 4px; padding: 4px 10px;
-    cursor: pointer; opacity: .6;
+    position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 2;
+    font: 12px system-ui, sans-serif; color: #fff; background: rgba(40, 40, 40, .75);
+    border: 1px solid rgba(255, 255, 255, .35); border-top: 0; border-radius: 0 0 4px 4px;
+    padding: 2px 10px; cursor: pointer; opacity: .6;
   }
   #win-button:hover, #win-button[aria-expanded="true"] { opacity: 1; }
   #win-panel {
-    position: absolute; top: 36px; right: 6px; z-index: 2; min-width: 260px; max-width: 60vw;
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 2;
+    min-width: 260px; max-width: 60vw;
     max-height: 70vh; overflow: auto; font: 13px system-ui, sans-serif; color: #111;
     background: #fff; border: 1px solid #888; border-radius: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
   }
@@ -42,7 +51,7 @@
   #win-panel .waiting { color: #777; }
   #win-panel .note { padding: 8px 12px; color: #555; }
 </style>
-<iframe id="vnc" title="Application" src="vnc.html?autoconnect=1&amp;resize=scale&amp;reconnect=1&amp;reconnect_delay=1000&amp;show_dot=1"></iframe>
+<iframe id="vnc" title="Application"></iframe>
 <button id="win-button" type="button" aria-expanded="false" aria-controls="win-panel">Windows</button>
 <div id="win-panel" hidden></div>
 <script>
@@ -128,23 +137,70 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !panel.hid
 // A click into the app (inside the iframe) moves focus out of this page.
 window.addEventListener("blur", () => { if (!panel.hidden) hidePanel(); });
 
-// The app's name as the title (the tab, or the installed app's window), and
-// in the installed app's window, the screen's size at one browser pixel per
-// screen pixel, so noVNC has nothing to scale. Resizing it later scales again;
-// so does a window that doesn't fit on the user's monitor.
-(async () => {
-  let info;
-  try {
-    info = await (await fetch("api/info", { cache: "no-store" })).json();
-  } catch (e) {
-    return;
-  }
-  document.title = info.name;
-  const [w, h] = (info.screen || "").split("x").map(Number);
+const wxh = s => (s || "").split("x").map(Number);
+
+// remote: once noVNC has asked Xvnc for a screen the size of the frame (on
+// connecting, and after the window has been resized), fit the Wine desktop to
+// it. The gateway retries until Xvnc has caught up.
+function followWindow(info) {
+  const [minW, minH] = wxh(info.min), [maxW, maxH] = wxh(info.max);
+  document.body.classList.add("remote");
+  Object.assign(frame.style, {
+    minWidth: minW + "px", minHeight: minH + "px", maxWidth: maxW + "px", maxHeight: maxH + "px",
+  });
+  let sent = "", timer;
+  const fit = async force => {
+    const size = { width: frame.clientWidth, height: frame.clientHeight };
+    const key = size.width + "x" + size.height;
+    if (key === sent && !force) return;
+    sent = key;
+    try {
+      await fetch("api/screen", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(size),
+      });
+    } catch (e) {
+      sent = "";
+    }
+  };
+  // noVNC waits half a second after the last resize event before asking Xvnc.
+  addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(fit, 800); });
+  // A (re)connect resizes Xvnc too, and after a container restart Wine has
+  // started at the old size.
+  frame.addEventListener("load", () => {
+    const root = frame.contentDocument.documentElement;
+    let connected = false;
+    new MutationObserver(() => {
+      const now = root.classList.contains("noVNC_connected");
+      if (now && !connected) setTimeout(() => fit(true), 800);
+      connected = now;
+    }).observe(root, { attributes: true, attributeFilter: ["class"] });
+  });
+}
+
+// scale: in the installed app's window, take the screen's size at one browser
+// pixel per screen pixel, so noVNC has nothing to scale. Resizing it later
+// scales again; so does a window that doesn't fit on the user's monitor.
+function fitWindowToScreen(info) {
+  const [w, h] = wxh(info.screen);
   if (!w || !h || !matchMedia("(display-mode: standalone)").matches) return;
   const width = w + outerWidth - innerWidth, height = h + outerHeight - innerHeight;
   if (width > screen.availWidth || height > screen.availHeight) return;
   resizeTo(width, height);
   moveTo(screen.availLeft + (screen.availWidth - width) / 2, screen.availTop + (screen.availHeight - height) / 2);
+}
+
+(async () => {
+  let info = { resize: "scale" };
+  try {
+    info = await (await fetch("api/info", { cache: "no-store" })).json();
+    document.title = info.name;
+  } catch (e) {
+    // Without the gateway's API, connect scaled.
+  }
+  const remote = info.resize === "remote";
+  if (remote) followWindow(info);
+  frame.src = "vnc.html?autoconnect=1&resize=" + (remote ? "remote" : "scale") +
+    "&reconnect=1&reconnect_delay=1000&show_dot=1";
+  if (!remote) fitWindowToScreen(info);
 })();
 </script>

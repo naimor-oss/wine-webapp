@@ -1,8 +1,9 @@
 #!/bin/sh
 # Application supervisor, started by the front end as user webapp with DISPLAY
-# set. Runs APP_EXE inside a Wine virtual desktop the size of the display and
-# starts it again whenever it exits, so a user who quits (or a crash) gets a
-# fresh start screen on the next browser connect instead of an empty desktop.
+# set. Runs APP_EXE inside a Wine virtual desktop (WEBAPP_DESKTOP_SIZE when the
+# front end sets it, else the size of the display) and starts it again
+# whenever it exits, so a user who quits (or a crash) gets a fresh start
+# screen on the next browser connect instead of an empty desktop.
 #
 # Contract: docs/app-contract.md
 set -eu
@@ -24,7 +25,7 @@ while :; do
   # shellcheck disable=SC2086
   # A crash or an abort exits non-zero: a reason to restart, not to end the
   # container, as set -e would.
-  wine explorer /desktop=webapp,"$WEBAPP_SCREEN" "$APP_EXE" ${APP_ARGS:-} || true
+  wine explorer /desktop=webapp,"${WEBAPP_DESKTOP_SIZE:-$WEBAPP_SCREEN}" "$APP_EXE" ${APP_ARGS:-} || true
   wineserver -w || true
   # Back off when it keeps dying right away (missing file, bad config), so a
   # broken app doesn't spin.

@@ -22,8 +22,9 @@ A front-end target must:
 
 ## `vnc`: TigerVNC + noVNC
 
-The browser shows one canvas: the whole virtual screen, scaled to the window.
-The Wine virtual desktop fills that screen, so Wine draws title bars, dialogs
+The browser shows one canvas: the whole virtual screen, the size of the
+browser window (see "Screen size" below), or scaled to it. The Wine virtual
+desktop fills that screen, so Wine draws title bars, dialogs
 and window placement itself, and the browser only relays pointer and keyboard
 events. There are no per-window grabs for the browser to get wrong.
 
@@ -32,17 +33,18 @@ events. There are no per-window grabs for the browser to get wrong.
   (websockify, used as a library) and answers the window list's API, all on
   port 8080.
 - `index.html` holds the stock noVNC page (`vnc.html`) in a same-origin iframe,
-  opened connected, scaled, and reconnecting on its own, so a page reload or an
-  app restart needs no user action. It adds the window list on top.
+  opened connected and reconnecting on its own, so a page reload or an app
+  restart needs no user action. It adds the window list on top.
 
 ### Window list
 
 The Wine virtual desktop has no taskbar. When an app's main window is
 maximized and gets focus, other top-level windows (another program's window,
 a dialog waiting for input) can end up behind it with no way back. A
-"Windows" button at the top right of the page lists the top-level windows a
-user can switch to, top of the z-order first, and brings the chosen one to the
-front.
+"Windows" tab at the top centre of the page, over the app's title bar (the top
+right corner holds a maximized window's own buttons), lists the top-level
+windows a user can switch to, top of the z-order first, and brings the chosen
+one to the front.
 
 | Piece | What it does |
 | --- | --- |
@@ -84,33 +86,50 @@ with no address bar or tabs, like a native program. Launching it again focuses
 the open window (`launch_handler`). Installing needs a secure context: HTTPS
 from the reverse proxy, or `http://localhost` for a test.
 
-The page asks the installed window to take the size of the screen
-(`WEBAPP_SCREEN`) plus its frame, centred, so one browser pixel shows one
-screen pixel and noVNC doesn't scale. It does this on every start, only in the
-installed window (an ordinary tab is left alone), and only when the window fits
-on the monitor. A user can still resize it, and then it scales again. "Pixel"
-here is the browser's: on a monitor set to 125 %, the app is drawn at 125 %, as
-a non-DPI-aware program is by Windows.
+With a fixed screen (`WEBAPP_RESIZE=scale`), the page asks the installed
+window to take the size of the screen (`WEBAPP_SCREEN`) plus its frame,
+centred, so noVNC doesn't scale; on every start, only in the installed window,
+and only when it fits on the monitor. With the screen following the window
+(the default) there is nothing to do: the window keeps the size the user gave
+it.
 
 ### Screen size
 
-The screen size is fixed per container (`WEBAPP_SCREEN`); noVNC scales it to
-the browser window. Making the screen follow the window instead (noVNC's
-`resize=remote`, Xvnc resizing to match) needs the Wine virtual desktop to
-follow, and in Wine 11.0 it doesn't, tested 2026-10-05 with Notepad maximized:
+`WEBAPP_RESIZE=remote` (the default): the screen is the size of the browser
+window, one browser pixel per screen pixel, so nothing is scaled, and it
+follows when the window is resized. "Pixel" is the browser's: on a monitor set
+to 125 %, the app is drawn at 125 %, as a non-DPI-aware program is by Windows.
 
-- Resizing the desktop's X window (`xdotool windowsize`) leaves the Windows
-  side as it was: the maximized window keeps its size, the screen metrics
-  don't change.
-- `ChangeDisplaySettingsEx` from inside Wine refuses any size that isn't in
-  Wine's fixed list of modes (`DISP_CHANGE_BADMODE`); for 1280x720, which is
-  in the list, it reported success but left the desktop window at 1600x900
-  and the screen metrics at 1024x768.
+1. noVNC (`resize=remote`) asks Xvnc (`-AcceptSetDesktopSize=1`) for a screen
+   the size of its frame, half a second after the last resize.
+2. The page then posts the same size to `POST /api/screen` (once settled, and
+   after each connect, since a restarted container starts at `WEBAPP_SCREEN`).
+3. The gateway runs `winlist.exe fit W H`: `ChangeDisplaySettingsEx` on the
+   app's desktop, retried for up to three seconds, since Wine accepts only a
+   size up to the X screen's, which may not have caught up. Then maximized
+   windows are stretched to the new size, keeping their maximized state, and
+   windows left partly off the screen are moved back onto it. Windows itself
+   does that last step on a resolution change; Wine doesn't.
 
-Following the window would need a change to Wine's virtual desktop in the
-fork, or running without a virtual desktop, each with its own risks. Until
-then, the installed app's window opening at the screen's size is the way to
-get an unscaled picture; pick `WEBAPP_SCREEN` to fit the users' monitors.
+The Wine desktop is started at `WEBAPP_SCREEN_MAX` (3840x2160): the X screen
+crops it, Wine reports the X screen's size to the app, and the desktop window
+never ends up smaller than the screen when it grows. An app (re)started after
+a resize starts at the current size. Below `WEBAPP_SCREEN_MIN` (1024x700) the
+screen stops shrinking and the page scrolls, so the app's fixed-size dialogs
+still fit; above `WEBAPP_SCREEN_MAX` the screen stops growing.
+
+`WEBAPP_RESIZE=scale`: the screen stays `WEBAPP_SCREEN` and noVNC scales it to
+the window, as the front end did at first.
+
+Tested 2026-10-05 with Notepad maximized, from Chromium: shrinking, growing
+past the starting size, the minimum, a quit and restart, a container restart;
+clicks land where they should after a resize. Two dead ends: resizing the Wine desktop's X window alone leaves the Windows side
+at the old size, and Wine without a virtual desktop (`Decorated=N`, no window
+manager) disagreed with X about window sizes (a maximized window 1508x858 to
+Windows, 855x641 on screen) and didn't draw its title bar. A program asking
+for a new resolution must run on the app's desktop (`webapp`, as
+`winlist.exe` does) and with `DISPLAY` set; otherwise it gets Wine's default
+desktop or no display at all, and the answers make no sense.
 
 ## Xpra (tried, not included)
 

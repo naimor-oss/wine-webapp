@@ -10,7 +10,12 @@ It adds the window list (docs/frontends.md, "Window list"):
     GET  /api/windows              top-level windows a user can switch to, top first
     POST /api/windows/HWND/raise   bring one to the front
 
-Both run winlist.exe once per request; nothing polls, and no Wine process stays
+and fits the Wine desktop to the browser window (docs/frontends.md, "Screen
+size"):
+
+    POST /api/screen               {"width": W, "height": H}, after noVNC resized Xvnc
+
+All run winlist.exe once per request; nothing polls, and no Wine process stays
 running beside the app (wine-webapp-run waits for wineserver to exit to notice
 that the app has quit). Runs as user webapp, with DISPLAY and WINEPREFIX set.
 
@@ -19,7 +24,7 @@ And what lets a browser install the page as an app (docs/frontends.md,
 
     GET  /manifest.webmanifest     web app manifest: name, icons, standalone window
     GET  /icons/icon-N.png         the app image's icons (/etc/wine-webapp/icons)
-    GET  /api/info                 app name and screen size, for the page
+    GET  /api/info                 app name, screen size and resize mode, for the page
 """
 import json
 import logging
@@ -36,6 +41,12 @@ RAISE = re.compile(r"^/api/windows/([0-9a-f]{1,16})/raise$")
 FIELDS = ("hwnd", "owner", "pid", "flags", "x", "y", "width", "height", "class", "title")
 ICON_DIR = "/etc/wine-webapp/icons"
 ICON = re.compile(r"^/icons/(icon-([0-9]{1,4})\.png)$")
+
+
+def size(var):
+    """An environment variable WxH as (W, H)."""
+    w, h = os.environ[var].lower().split("x")
+    return int(w), int(h)
 
 
 def app_name():
@@ -124,7 +135,13 @@ class Handler(ProxyRequestHandler):
                 self.reply(503, {"error": str(e)})
             return
         if path == "/api/info":
-            self.reply(200, {"name": app_name(), "screen": os.environ.get("WEBAPP_SCREEN", "")})
+            self.reply(200, {
+                "name": app_name(),
+                "screen": os.environ.get("WEBAPP_SCREEN", ""),
+                "resize": os.environ.get("WEBAPP_RESIZE", "scale"),
+                "min": os.environ.get("WEBAPP_SCREEN_MIN", ""),
+                "max": os.environ.get("WEBAPP_SCREEN_MAX", ""),
+            })
             return
         if path == "/manifest.webmanifest":
             self.reply(200, manifest(), "application/manifest+json")
@@ -140,8 +157,9 @@ class Handler(ProxyRequestHandler):
         super().do_GET()
 
     def do_POST(self):
-        m = RAISE.match(urlsplit(self.path).path)
-        if not m:
+        path = urlsplit(self.path).path
+        m = RAISE.match(path)
+        if not m and path != "/api/screen":
             self.reply(404, {"error": "not found"})
             return
         # A page from another site must not drive the app: browsers send
@@ -153,9 +171,35 @@ class Handler(ProxyRequestHandler):
         if origin and urlsplit(origin).netloc not in hosts:
             self.reply(403, {"error": "cross-origin request"})
             return
+        if m:
+            try:
+                winlist("raise", m.group(1))
+                self.reply(200, {"raised": m.group(1)})
+            except RuntimeError as e:
+                self.reply(409, {"error": str(e)})
+            return
+        self.fit_screen()
+
+    def fit_screen(self):
+        """POST /api/screen {"width": W, "height": H}: the browser has asked
+        Xvnc for a WxH screen; fit the Wine desktop to it."""
+        if os.environ.get("WEBAPP_RESIZE") != "remote":
+            self.reply(409, {"error": "the screen size is fixed (WEBAPP_RESIZE=scale)"})
+            return
         try:
-            winlist("raise", m.group(1))
-            self.reply(200, {"raised": m.group(1)})
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(min(length, 1024)) or b"{}")
+            w, h = int(body["width"]), int(body["height"])
+        except (ValueError, KeyError, TypeError):
+            self.reply(400, {"error": "expected {\"width\": W, \"height\": H}"})
+            return
+        (min_w, min_h), (max_w, max_h) = size("WEBAPP_SCREEN_MIN"), size("WEBAPP_SCREEN_MAX")
+        if not (min_w <= w <= max_w and min_h <= h <= max_h):
+            self.reply(400, {"error": "size out of range"})
+            return
+        try:
+            winlist("fit", str(w), str(h))
+            self.reply(200, {"screen": "%dx%d" % (w, h)})
         except RuntimeError as e:
             self.reply(409, {"error": str(e)})
 

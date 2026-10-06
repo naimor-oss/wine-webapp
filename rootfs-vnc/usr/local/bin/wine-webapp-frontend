@@ -1,6 +1,6 @@
 #!/bin/sh
 # noVNC front end (container entrypoint, runs as root under tini):
-#   Xvnc :1       virtual screen of WEBAPP_SCREEN, VNC on localhost:5901 only
+#   Xvnc :1       virtual screen, WEBAPP_SCREEN to start with; VNC on localhost:5901 only
 #   wine-webapp-gateway   noVNC web client, WebSocket bridge, window list and
 #                 web app manifest on :8080
 #   wine-webapp-run   the app supervisor, in the foreground
@@ -21,8 +21,18 @@ fi
 # the wait below pass anyway. Nothing from the previous run is still alive.
 rm -rf /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/.wine-*
 
+# WEBAPP_RESIZE=remote: the browser asks Xvnc to resize the screen to its
+# window, and the gateway then fits the Wine desktop to it (docs/frontends.md,
+# "Screen size"). The Wine desktop starts at the largest size, the X screen
+# crops it, and Wine reports the X screen's size to the app.
+case $WEBAPP_RESIZE in
+  remote) accept=1; export WEBAPP_DESKTOP_SIZE="$WEBAPP_SCREEN_MAX" ;;
+  scale)  accept=0 ;;
+  *) echo "WEBAPP_RESIZE must be remote or scale, not $WEBAPP_RESIZE" >&2; exit 1 ;;
+esac
+
 runuser -u webapp -- Xvnc :1 -geometry "$WEBAPP_SCREEN" -depth 24 -rfbport 5901 \
-  -localhost=1 -SecurityTypes None -AlwaysShared=1 -AcceptSetDesktopSize=0 \
+  -localhost=1 -SecurityTypes None -AlwaysShared=1 -AcceptSetDesktopSize=$accept \
   >/tmp/xvnc.log 2>&1 &
 runuser -u webapp -- wine-webapp-gateway 8080 5901 /usr/share/novnc \
   >/tmp/gateway.log 2>&1 &

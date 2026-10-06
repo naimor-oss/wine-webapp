@@ -31,7 +31,10 @@ there is nothing to copy).
 | `APP_WORKDIR` | directory of `APP_EXE`, or the home directory for a Windows path | Working directory. Usually a volume. The front end creates it and hands it to user `webapp`. |
 | `APP_SYNC_FROM` | empty | If set, copy program files from this directory into `APP_WORKDIR` on every start. See below. |
 | `APP_SYNC_KEEP` | `*.ini *.INI` | Globs synced only when missing (user settings). |
-| `WEBAPP_SCREEN` | `1600x900` | Size of the virtual screen and of the Wine desktop. The browser client scales it to the window; an installed app's window opens at this size (see [`frontends.md`](frontends.md), "Installed as an app"). |
+| `WEBAPP_SCREEN` | `1600x900` | Size of the virtual screen until a browser connects; with `WEBAPP_RESIZE=scale`, its size for good. |
+| `WEBAPP_RESIZE` | `remote` | `remote`: the screen follows the browser window, unscaled. `scale`: it stays `WEBAPP_SCREEN`, scaled to the window. See [`frontends.md`](frontends.md), "Screen size". Set by the `vnc` front end. |
+| `WEBAPP_SCREEN_MIN` | `1024x700` | Smallest screen with `remote`; a smaller browser window scrolls. Raise it if the app has larger fixed-size windows. |
+| `WEBAPP_SCREEN_MAX` | `3840x2160` | Largest screen with `remote`, and the size the Wine desktop starts at. |
 | `WEBAPP_NAME` | file name of `APP_EXE` | Name of the browser tab, and of the app when a user installs it from the browser. |
 | `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen and of the Wine desktop. `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
 
