@@ -8,6 +8,7 @@ Every entry is a `FIXME(remove-when-fixed)` in the sense of
 | --- | --- | --- | --- | --- |
 | 1 | Mouse stops working after clicking into a text field | Patched edit controls | fork `naimor/wine-11.0`, `comctl32_v6.dll`, `user32.dll` | not filed; draft in [`upstream/`](upstream/wine-bug-edit-capture.md) |
 | 2 | Typed text invisible in text fields | Visual theme off | `rootfs-base/etc/wine-webapp/prefix.d/10-disable-visual-theme.reg` | bug not yet filed |
+| 3 | wineserver crashes (divide error) during a screen resize | Guard against an empty monitor rectangle | fork `naimor/wine-11.0`, `wineserver` | not filed |
 
 ## How patches are carried
 
@@ -17,8 +18,9 @@ Every entry is a `FIXME(remove-when-fixed)` in the sense of
   release tag and carries our commits in Wine's own style (test first, then the
   fix removing `todo_wine`).
 - The image installs the WineHQ binary packages of that release and replaces
-  only the DLLs we patched (`WINE_PATCHED_DLLS` in the `Dockerfile`), built
-  from the fork by `build/build-wine-dlls.sh`. Building only those modules
+  only the modules we patched (`WINE_PATCHED_DLLS` in the `Dockerfile`: 32-bit
+  DLLs and `wineserver`), built from the fork by `build/build-wine-dlls.sh`.
+  Building only those modules
   takes minutes instead of the hour a full Wine build takes.
 - Moving to a new Wine release: create `naimor/wine-<new>` from the new tag,
   cherry-pick the commits still not upstream, update `WINE_PKG`,
@@ -90,6 +92,30 @@ correctly.
 
 **Remove when** an upstream fix ships; to check, delete the `.reg` file,
 rebuild, and type into a field of an affected application.
+
+## 3. wineserver divides by an empty monitor rectangle
+
+**Symptom.** While the screen was resized to follow the browser window, the
+screen went black and the app froze: grow, shrink, shrink again, seen once
+with a Clarion application (2026-10-05). Kernel log:
+`wineserver ... trap divide error`. Every Wine process then blocks on the dead
+server.
+
+**Cause (Wine 11.0).** `map_point_raw_to_virt()` in `server/window.c`, used
+to find the window under the pointer, divides by the raw width and height of
+the monitor nearest to the point, with no check for zero. The crashing
+instruction (`idiv` by twice the width) is that line. The monitor list the
+server gets from `win32u` can contain a monitor with an empty raw rectangle
+while display settings change; a mouse message at that moment crashes the
+server. Not reproduced on demand.
+
+**Fix in the fork.** Leave the point unmapped when the monitor's raw
+rectangle is empty. The image builds `wineserver` from the fork (in
+`WINE_PATCHED_DLLS`) and drops it over WineHQ's. `wine-webapp-run` also
+restarts the app when the server dies, whatever the reason.
+
+**Remove when** a Wine release we ship guards that division; until then keep
+the commit when rebasing.
 
 ## Checks after changing Wine or the patches
 

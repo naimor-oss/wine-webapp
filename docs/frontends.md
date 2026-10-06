@@ -146,20 +146,12 @@ treating the earlier experience as a verdict on Xpra.
 
 ## Open items
 
-- **wineserver crashes on a screen resize, now and then.** Seen 2026-10-05
-  with the Clarion app: grow, shrink, shrink again, and the screen went black.
-  Kernel log: `wineserver ... trap divide error`. The division is in
-  `map_point_raw_to_virt` (`server/window.c`, Wine 11.0), which maps a pointer
-  position onto the nearest monitor and divides by that monitor's raw width
-  with no check for zero; a monitor list with an empty rectangle, probably
-  sent mid-way through a display change, does it. Not reproduced on demand
-  (the login screen alone, the pointer at the corner while shrinking).
-  `wine-webapp-run` now notices that the server is gone and restarts the app
-  (all Wine processes block forever on a dead server, so before that the
-  supervisor waited for good). The fix belongs in the fork: skip monitors
-  with an empty rectangle in `get_monitor_from_rect`, or return unmapped in
-  `map_point_raw_to_virt`; that needs the image to build `wineserver` from
-  the fork, not just the 32-bit DLLs.
+- **wineserver crash on a screen resize: fixed, not yet seen fixed.** Seen
+  once, 2026-10-05, with the Clarion app (grow, shrink, shrink again; black
+  screen); never reproduced on demand. Patched in the fork
+  ([`wine-patches.md`](wine-patches.md) #3), and `wine-webapp-run` restarts
+  the app if the server dies anyway. Keep resizing during normal use and
+  watch the logs for `wineserver ... died`.
 - **Installed app: not yet verified in a browser.** The manifest, icons and
   the window sizing were written 2026-10-05; still to do per AGENTS.md
   "Verify in a browser": install from Chrome and from Edge on Windows, check

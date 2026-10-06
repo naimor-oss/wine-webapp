@@ -24,8 +24,9 @@ base
 ## Rules specific to this repo
 
 - **Wine version pinning.** `WINE_PKG`, `WINE_FORK_REF` and
-  `WINE_PATCHED_DLLS` in the `Dockerfile` change together; the patched DLLs
-  must be built from the same Wine release as the installed packages.
+  `WINE_PATCHED_DLLS` in the `Dockerfile` change together; the patched modules
+  (DLLs and `wineserver`) must be built from the same Wine release as the
+  installed packages, or `wineserver` and its clients disagree on the protocol.
 - **Every Wine change is listed** in [`docs/wine-patches.md`](docs/wine-patches.md)
   with symptom, cause, evidence and removal condition. A workaround file
   carries the same FIXME block (`dev-commons/STYLE.md` §10).

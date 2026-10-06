@@ -14,13 +14,15 @@
 ARG DEBIAN=debian:trixie-slim
 
 # Wine release, and the WineHQ Debian package version built from it. The
-# patched DLLs are built from WINE_FORK_REF, which must be based on the same
-# release. Change all three together.
+# patched modules are built from WINE_FORK_REF, which must be based on the
+# same release (wineserver also speaks that release's protocol). Change all
+# three together.
 ARG WINE_PKG=11.0.0.0~trixie-1
 ARG WINE_FORK=https://github.com/Naimor-OSS/wine.git
 ARG WINE_FORK_REF=naimor/wine-11.0
-# 32-bit PE modules rebuilt from the fork and dropped over WineHQ's copies.
-ARG WINE_PATCHED_DLLS="comctl32_v6.dll user32.dll"
+# Modules rebuilt from the fork and dropped over WineHQ's copies: 32-bit PE
+# DLLs, and wineserver (build/build-wine-dlls.sh).
+ARG WINE_PATCHED_DLLS="comctl32_v6.dll user32.dll wineserver"
 
 # --- Wine source from our fork (overridable with --build-context winesrc=...)
 FROM scratch AS winesrc
@@ -63,7 +65,7 @@ RUN dpkg --add-architecture i386 \
       tini fontconfig fonts-liberation \
  && apt-get purge -y gnupg wget && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
-COPY --from=winedlls /out/ /opt/wine-stable/lib/wine/i386-windows/
+COPY --from=winedlls /out/ /opt/wine-stable/
 COPY --from=tools /out/winlist.exe /usr/local/lib/wine-webapp/
 
 RUN useradd -m -u 1000 -s /bin/bash webapp
