@@ -99,5 +99,12 @@ ENV WEBAPP_RESIZE=remote WEBAPP_SCREEN_MIN=1024x700 WEBAPP_SCREEN_MAX=3840x2160 
     WEBAPP_PAPER=Letter
 COPY rootfs-vnc/ /
 RUN sed -i 's/\r$//' /usr/local/bin/wine-webapp-* && chmod +x /usr/local/bin/wine-webapp-*
+# cups-pdf writes into a staging folder and hands each print to the print
+# steps (wine-webapp-print-hooks), which move it into ~/PDF when done.
+RUN sed -i -e 's|^Out .*|Out ${HOME}/.prints|' \
+           -e 's|^#Label .*|Label 2|' \
+           -e 's|^#PostProcessing.*|PostProcessing /usr/local/bin/wine-webapp-print-hooks|' \
+      /etc/cups/cups-pdf.conf \
+ && grep -q '^PostProcessing /usr/local/bin/wine-webapp-print-hooks' /etc/cups/cups-pdf.conf
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/wine-webapp-frontend"]

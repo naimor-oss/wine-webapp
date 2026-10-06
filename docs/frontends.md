@@ -135,8 +135,22 @@ desktop or no display at all, and the answers make no sense.
 
 The app sees one printer, "PDF", its default: CUPS in the container with
 `cups-pdf`, set up by the front end at start (`WEBAPP_PAPER`, default
-`Letter`). Each print becomes a PDF in `~webapp/PDF`, named after the
-document (`TITLE-job_N.pdf`). The page then hands it to the user:
+`Letter`). `cups-pdf` writes each print into a staging folder
+(`~webapp/.prints`, as `TITLE-job_N.pdf`) and calls
+`wine-webapp-print-hooks` on it, as the user who printed. That runs the app
+image's **print steps**, `/etc/wine-webapp/print.d/*`, then moves the result
+into `~webapp/PDF` in one rename, so the browser never sees a half-processed
+print. The base has no steps; the print goes through unchanged.
+
+A step is an executable named like `run-parts` wants (letters, digits, `-`,
+`_`), run in name order as `STEP FILE` with `PRINT_USER`, `PRINT_JOB` and the
+container's `WEBAPP_*` settings set (CUPS gives it a clean environment; the
+front end saves them to `/run/wine-webapp/env`). It may change `FILE` in
+place, or write a new file and print its path as its last line of output (to
+rename the print). A step that fails is logged to `/tmp/print-hooks.log` and
+skipped; the print is never lost.
+
+The page then hands the print to the user:
 
 | Piece | What it does |
 | --- | --- |

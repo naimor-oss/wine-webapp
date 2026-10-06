@@ -69,6 +69,7 @@ they need no re-run:
 | --- | --- |
 | `/etc/wine-webapp/splash.png` | Start-up screen: shown centred on `WEBAPP_BACKGROUND` while the app starts, and again after the user quits until it is back. Without it, the screen is plain `WEBAPP_BACKGROUND`. Say "starting" on it: it shows only then. |
 | `/etc/wine-webapp/icons/icon-N.png` | Square icons, N pixels wide, for the browser tab and the installed app. Browsers want at least `icon-192.png` and `icon-512.png` before they offer to install. |
+| `/etc/wine-webapp/print.d/*` | Print steps: run on every print, in name order, before it reaches the browser (rename it, stamp it, copy it somewhere). Contract in [`frontends.md`](frontends.md), "Printing". |
 
 The base ships `prefix.d/10-disable-visual-theme.reg`, a workaround for a Wine
 bug (see [`wine-patches.md`](wine-patches.md)). An app image that does not need

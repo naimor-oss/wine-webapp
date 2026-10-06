@@ -58,6 +58,11 @@ fi >/dev/null 2>&1 || echo "could not set the start-up screen" >&2
 # (docs/frontends.md, "Printing"). Wine lists CUPS printers when the app
 # starts, so the scheduler must be up first.
 rm -f /run/cups/cupsd.pid /run/cups/cups.sock
+# CUPS runs print steps with a clean environment; they read the container's
+# WEBAPP_* settings from here (wine-webapp-print-hooks).
+mkdir -p /run/wine-webapp
+env | grep '^WEBAPP_' | sed "s/'/'\\\\''/g; s/=/='/; s/\$/'/; s/^/export /" > /run/wine-webapp/env
+chmod 644 /run/wine-webapp/env
 cupsd
 i=0
 until lpstat -r >/dev/null 2>&1; do

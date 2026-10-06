@@ -1,0 +1,54 @@
+#!/bin/sh
+# cups-pdf's PostProcessing script (/etc/cups/cups-pdf.conf), run as the user
+# who printed, once per print:
+#
+#   wine-webapp-print-hooks PDF_FILE USER [USER_AS_GIVEN]
+#
+# cups-pdf writes each print into ~/.prints (a staging folder). This runs the
+# image's print steps on it, /etc/wine-webapp/print.d/* (executables named
+# like run-parts wants, letters, digits, - and _, in name order), then moves the result into ~/PDF, where the gateway lists it for the
+# browser (docs/frontends.md, "Printing"). Moving it in last, in one rename,
+# means the browser never sees a half-processed print.
+#
+# Step contract: called as `STEP FILE`, with PRINT_USER and PRINT_JOB set. A
+# step may change FILE in place, or write a new file and print its path as the
+# last line of its output (to rename it, say). A step that fails is logged and
+# skipped: the print goes on with the file as it was, and is never lost.
+set -u
+# CUPS gives this script a clean environment: load the container's WEBAPP_*
+# settings, saved by the front end at start.
+# shellcheck disable=SC1091
+[ -r /run/wine-webapp/env ] && . /run/wine-webapp/env
+file=$1
+export PRINT_USER="${2:-}" PRINT_JOB=
+PRINT_JOB=$(basename "$file" | sed -n 's/.*-job_\([0-9]*\)\.pdf$/\1/p')
+home=$(getent passwd "$(id -un)" | cut -d: -f6)
+out="$home/PDF"
+log=/tmp/print-hooks.log
+mkdir -p "$out"
+
+for step in /etc/wine-webapp/print.d/*; do
+  # run-parts' rule: only names of letters, digits, - and _ (not README.md)
+  case $(basename "$step") in *[!A-Za-z0-9_-]*) continue ;; esac
+  [ -f "$step" ] && [ -x "$step" ] || continue
+  if result=$("$step" "$file" 2>>"$log"); then
+    new=$(printf '%s\n' "$result" | tail -n 1)
+    if [ -n "$new" ] && [ "$new" != "$file" ] && [ -f "$new" ]; then
+      rm -f "$file"
+      file=$new
+    fi
+  else
+    echo "$(date -Is) print step $step failed (exit $?) on $file; skipped" >>"$log"
+  fi
+done
+
+# Same file system (both under $home), so this is a rename. Never overwrite an
+# earlier print of the same name.
+name=$(basename "$file")
+target="$out/$name"
+n=2
+while [ -e "$target" ]; do
+  target="$out/${name%.pdf} ($n).pdf"
+  n=$((n + 1))
+done
+mv "$file" "$target"
