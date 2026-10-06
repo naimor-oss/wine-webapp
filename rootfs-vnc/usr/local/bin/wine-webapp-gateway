@@ -25,6 +25,12 @@ And what lets a browser install the page as an app (docs/frontends.md,
     GET  /manifest.webmanifest     web app manifest: name, icons, standalone window
     GET  /icons/icon-N.png         the app image's icons (/etc/wine-webapp/icons)
     GET  /api/info                 app name, screen size and resize mode, for the page
+
+And the app's prints, PDFs from the cups-pdf printer (docs/frontends.md,
+"Printing"):
+
+    GET  /api/prints               finished prints, newest first; older ones are deleted
+    GET  /prints/NAME              one print, to view in the browser
 """
 import json
 import logging
@@ -32,7 +38,8 @@ import os
 import re
 import subprocess
 import sys
-from urllib.parse import urlsplit
+import time
+from urllib.parse import quote, unquote, urlsplit
 
 from websockify.websocketproxy import ProxyRequestHandler, WebSocketProxy
 
@@ -41,6 +48,45 @@ RAISE = re.compile(r"^/api/windows/([0-9a-f]{1,16})/raise$")
 FIELDS = ("hwnd", "owner", "pid", "flags", "x", "y", "width", "height", "class", "title")
 ICON_DIR = "/etc/wine-webapp/icons"
 ICON = re.compile(r"^/icons/(icon-([0-9]{1,4})\.png)$")
+PRINT_DIR = os.path.expanduser("~/PDF")  # cups-pdf's Out ${HOME}/PDF, as user webapp
+PRINT = re.compile(r"^/prints/([^/]+\.pdf)$")
+PRINT_JOB = re.compile(r"-job_([0-9]+)\.pdf$")
+
+
+def prints():
+    """Finished prints, newest first. cups-pdf names them TITLE-job_N.pdf
+    (spaces as underscores). A file still changing is left out; one older
+    than WEBAPP_PRINTS_KEEP_HOURS is deleted."""
+    keep = float(os.environ.get("WEBAPP_PRINTS_KEEP_HOURS", "24")) * 3600
+    now = time.time()
+    result = []
+    try:
+        names = os.listdir(PRINT_DIR)
+    except OSError:
+        return []
+    for name in names:
+        if not name.endswith(".pdf"):
+            continue
+        path = os.path.join(PRINT_DIR, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if now - st.st_mtime > keep:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        if now - st.st_mtime < 2:  # cups-pdf may still be writing it
+            continue
+        m = PRINT_JOB.search(name)
+        title = (name[:m.start()] if m else name[:-4]).replace("_", " ").strip() or "Print"
+        result.append({"name": name, "url": "prints/" + quote(name), "title": title,
+                       "job": int(m.group(1)) if m else 0, "time": int(st.st_mtime),
+                       "size": st.st_size})
+    result.sort(key=lambda p: (p["time"], p["job"]), reverse=True)
+    return result
 
 
 def size(var):
@@ -154,6 +200,24 @@ class Handler(ProxyRequestHandler):
             except OSError:
                 self.reply(404, {"error": "not found"})
             return
+        if path == "/api/prints":
+            self.reply(200, {"prints": prints()})
+            return
+        m = PRINT.match(path)
+        if m:
+            # only a name the listing shows, never a path
+            name = unquote(m.group(1))
+            if name not in {p["name"] for p in prints()}:
+                self.reply(404, {"error": "not found"})
+                return
+            try:
+                with open(os.path.join(PRINT_DIR, name), "rb") as f:
+                    self.send_file(f.read(), "application/pdf",
+                                   {"Content-Disposition": "inline; filename*=UTF-8''" + quote(name),
+                                    "Cache-Control": "no-store"})
+            except OSError:
+                self.reply(404, {"error": "not found"})
+            return
         super().do_GET()
 
     def do_POST(self):
@@ -212,9 +276,11 @@ class Handler(ProxyRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def send_file(self, data, content_type):
+    def send_file(self, data, content_type, headers=None):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

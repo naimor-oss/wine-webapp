@@ -36,6 +36,8 @@ there is nothing to copy).
 | `WEBAPP_RESIZE` | `remote` | `remote`: the screen follows the browser window, unscaled. `scale`: it stays `WEBAPP_SCREEN`, scaled to the window. See [`frontends.md`](frontends.md), "Screen size". Set by the `vnc` front end. |
 | `WEBAPP_SCREEN_MIN` | `1024x700` | Smallest screen with `remote`; a smaller browser window scrolls. Raise it if the app has larger fixed-size windows. |
 | `WEBAPP_SCREEN_MAX` | `3840x2160` | Largest screen with `remote`, and the size the Wine desktop starts at. |
+| `WEBAPP_PAPER` | `Letter` | Paper size of the PDF printer (a CUPS `PageSize`, e.g. `A4`). See [`frontends.md`](frontends.md), "Printing". |
+| `WEBAPP_PRINTS_KEEP_HOURS` | `24` | How long prints stay available to the browser before they are deleted. |
 | `WEBAPP_NAME` | file name of `APP_EXE` | Name of the browser tab, and of the app when a user installs it from the browser. |
 | `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen and of the Wine desktop. `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
 

@@ -131,6 +131,28 @@ for a new resolution must run on the app's desktop (`webapp`, as
 `winlist.exe` does) and with `DISPLAY` set; otherwise it gets Wine's default
 desktop or no display at all, and the answers make no sense.
 
+### Printing
+
+The app sees one printer, "PDF", its default: CUPS in the container with
+`cups-pdf`, set up by the front end at start (`WEBAPP_PAPER`, default
+`Letter`). Each print becomes a PDF in `~webapp/PDF`, named after the
+document (`TITLE-job_N.pdf`). The page then hands it to the user:
+
+| Piece | What it does |
+| --- | --- |
+| `GET /api/prints` | Finished prints, newest first (a file changed in the last 2 s is still being written). Prints older than `WEBAPP_PRINTS_KEEP_HOURS` (24) are deleted |
+| `GET /prints/NAME` | One print, `application/pdf`, inline; only names the listing returns |
+| The page | Checks `/api/prints` every 3 s while visible; a new print shows a notice with "Open" (a new browser tab: view, save, or print on the user's own printer). The "Prints" tab lists the last day's prints |
+
+WineHQ's packages run a 32-bit program as a 32-bit Linux process, so Wine
+needs the 32-bit CUPS library (`libcups2t64:i386`) there. Without it, a
+32-bit app finds no printer, and worse: Wine's printer setup in a 32-bit
+process, unable to reach CUPS, deletes the CUPS printers a 64-bit process
+had registered (seen 2026-10-06).
+
+Not covered: paper printers on the network (labels, route sheets), and
+e-mailing a print instead; both would be more CUPS queues.
+
 ## Xpra (tried, not included)
 
 Xpra was the first choice because its HTML5 client can forward print jobs to
@@ -167,4 +189,9 @@ treating the earlier experience as a verdict on Xpra.
   (inactive) window activated the window, the second pressed the button. On
   Windows one click normally does both. Not investigated yet.
 - **Clipboard** between the browser and the app: not yet checked for `vnc`.
-- **Printing / file hand-off** to the browser user: not provided by `vnc`.
+- **Printing: the Clarion app's reports not tried yet.** Checked 2026-10-06
+  with a small 32-bit test program (default printer found, Letter page,
+  PDF listed, opened inline, notice shown). Still to do: real reports, a
+  multi-page one, and how a print looks when the user prints the PDF again
+  on paper.
+- **File hand-off** other than prints (exports, attachments): not provided.

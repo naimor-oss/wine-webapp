@@ -53,4 +53,20 @@ else
   runuser -u webapp -- hsetroot -solid "$WEBAPP_BACKGROUND"
 fi >/dev/null 2>&1 || echo "could not set the start-up screen" >&2
 
+# Printing: CUPS with one printer, "PDF" (cups-pdf), the default. Its PDFs land
+# in ~webapp/PDF, where the gateway hands them to the browser
+# (docs/frontends.md, "Printing"). Wine lists CUPS printers when the app
+# starts, so the scheduler must be up first.
+rm -f /run/cups/cupsd.pid /run/cups/cups.sock
+cupsd
+i=0
+until lpstat -r >/dev/null 2>&1; do
+  i=$((i + 1))
+  if [ "$i" -gt 50 ]; then echo "cupsd did not start; no printer" >&2; break; fi
+  sleep 0.1
+done
+lpadmin -p PDF -E -v cups-pdf:/ -P /usr/share/ppd/cups-pdf/CUPS-PDF_opt.ppd \
+  -o PageSize="$WEBAPP_PAPER" -D "PDF to the browser" && lpadmin -d PDF \
+  || echo "could not set up the PDF printer" >&2
+
 exec runuser -u webapp -- wine-webapp-run

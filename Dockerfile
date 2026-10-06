@@ -88,10 +88,15 @@ FROM base AS vnc
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       tigervnc-standalone-server novnc python3-websockify hsetroot \
+      cups printer-driver-cups-pdf libcups2t64:i386 \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 # The screen follows the browser window (remote) between the minimum and the
 # maximum, or stays WEBAPP_SCREEN and is scaled (scale); docs/frontends.md.
-ENV WEBAPP_RESIZE=remote WEBAPP_SCREEN_MIN=1024x700 WEBAPP_SCREEN_MAX=3840x2160
+# Prints go to a PDF printer and on to the browser, on WEBAPP_PAPER paper
+# (docs/frontends.md, "Printing"). WineHQ runs 32-bit programs as 32-bit
+# processes, so Wine needs the 32-bit CUPS library to see any printer there.
+ENV WEBAPP_RESIZE=remote WEBAPP_SCREEN_MIN=1024x700 WEBAPP_SCREEN_MAX=3840x2160 \
+    WEBAPP_PAPER=Letter
 COPY rootfs-vnc/ /
 RUN sed -i 's/\r$//' /usr/local/bin/wine-webapp-* && chmod +x /usr/local/bin/wine-webapp-*
 EXPOSE 8080

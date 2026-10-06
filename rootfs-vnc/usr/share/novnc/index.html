@@ -26,34 +26,54 @@
   #vnc { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; display: block; }
   /* Top centre, over the app's title bar: the top right corner holds a
      maximized window's minimize, maximize and close buttons. */
-  #win-button {
+  #bar {
     position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 2;
+    display: flex; gap: 1px;
+  }
+  #bar button {
     font: 12px system-ui, sans-serif; color: #fff; background: rgba(40, 40, 40, .75);
     border: 1px solid rgba(255, 255, 255, .35); border-top: 0; border-radius: 0 0 4px 4px;
     padding: 2px 10px; cursor: pointer; opacity: .6;
   }
-  #win-button:hover, #win-button[aria-expanded="true"] { opacity: 1; }
-  #win-panel {
+  #bar button:hover, #bar button[aria-expanded="true"] { opacity: 1; }
+  .panel {
     position: fixed; top: 24px; left: 50%; transform: translateX(-50%); z-index: 2;
     min-width: 260px; max-width: 60vw;
     max-height: 70vh; overflow: auto; font: 13px system-ui, sans-serif; color: #111;
     background: #fff; border: 1px solid #888; border-radius: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
   }
-  #win-panel[hidden] { display: none; }
-  #win-panel ul { list-style: none; margin: 0; padding: 4px 0; }
-  #win-panel button {
-    display: block; width: 100%; text-align: left; font: inherit; color: inherit;
-    background: none; border: 0; padding: 6px 12px; cursor: pointer;
+  .panel[hidden] { display: none; }
+  .panel ul { list-style: none; margin: 0; padding: 4px 0; }
+  .panel button, .panel a {
+    display: block; width: 100%; box-sizing: border-box; text-align: left; font: inherit; color: inherit;
+    background: none; border: 0; padding: 6px 12px; cursor: pointer; text-decoration: none;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  #win-panel button:hover, #win-panel button:focus { background: #dbe8ff; outline: none; }
-  #win-panel .owned { padding-left: 28px; }
-  #win-panel .waiting { color: #777; }
-  #win-panel .note { padding: 8px 12px; color: #555; }
+  .panel button:hover, .panel button:focus, .panel a:hover, .panel a:focus { background: #dbe8ff; outline: none; }
+  .panel .owned { padding-left: 28px; }
+  .panel .waiting { color: #777; }
+  .panel .when { float: right; margin-left: 16px; color: #777; }
+  .panel .note { padding: 8px 12px; color: #555; }
+  /* A new print: bottom centre, until opened, dismissed or 20 s are up. */
+  #toast {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 3;
+    display: flex; gap: 12px; align-items: center; max-width: 80vw;
+    font: 13px system-ui, sans-serif; color: #fff; background: rgba(30, 30, 30, .92);
+    border-radius: 6px; padding: 10px 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  }
+  #toast[hidden] { display: none; }
+  #toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #toast a { color: #9cc3ff; font-weight: 600; }
+  #toast button { font: inherit; color: #ccc; background: none; border: 0; cursor: pointer; }
 </style>
 <iframe id="vnc" title="Application"></iframe>
-<button id="win-button" type="button" aria-expanded="false" aria-controls="win-panel">Windows</button>
-<div id="win-panel" hidden></div>
+<div id="bar">
+  <button id="win-button" type="button" aria-expanded="false" aria-controls="win-panel">Windows</button>
+  <button id="prints-button" type="button" aria-expanded="false" aria-controls="prints-panel">Prints</button>
+</div>
+<div id="win-panel" class="panel" hidden></div>
+<div id="prints-panel" class="panel" hidden></div>
+<div id="toast" role="status" hidden></div>
 <script>
 "use strict";
 const frame = document.getElementById("vnc");
@@ -132,10 +152,92 @@ async function openPanel() {
   list.querySelector("button").focus();
 }
 
-button.addEventListener("click", () => panel.hidden ? openPanel() : closePanel());
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !panel.hidden) closePanel(); });
+// Prints: the app prints to a PDF printer; each PDF opens in a new browser
+// tab, to view, save or print on the user's own printer. See
+// docs/frontends.md, "Printing".
+const printsButton = document.getElementById("prints-button");
+const printsPanel = document.getElementById("prints-panel");
+const toast = document.getElementById("toast");
+const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+function hidePrints() {
+  printsPanel.hidden = true;
+  printsButton.setAttribute("aria-expanded", "false");
+}
+
+function printLink(p, after) {
+  const a = Object.assign(document.createElement("a"), { href: p.url, target: "_blank", rel: "noopener" });
+  a.append(Object.assign(document.createElement("span"), { className: "when", textContent: clock(p.time) }), p.title);
+  a.title = p.title;
+  a.addEventListener("click", () => setTimeout(after, 0));
+  return a;
+}
+
+async function openPrints() {
+  printsPanel.hidden = false;
+  printsButton.setAttribute("aria-expanded", "true");
+  let list;
+  try {
+    list = (await (await fetch("api/prints", { cache: "no-store" })).json()).prints;
+  } catch (e) {
+    printsPanel.replaceChildren(Object.assign(document.createElement("div"), { className: "note", textContent: "Prints unavailable: " + e.message }));
+    return;
+  }
+  if (!list.length) {
+    printsPanel.replaceChildren(Object.assign(document.createElement("div"), { className: "note", textContent: "Nothing printed in the last day. Print from the app to the PDF printer." }));
+    return;
+  }
+  const ul = document.createElement("ul");
+  for (const p of list) {
+    const li = document.createElement("li");
+    li.append(printLink(p, () => { hidePrints(); focusApp(); }));
+    ul.append(li);
+  }
+  printsPanel.replaceChildren(ul);
+  ul.querySelector("a").focus();
+}
+
+let toastTimer;
+function hideToast() { toast.hidden = true; clearTimeout(toastTimer); }
+function showToast(p) {
+  const link = printLink(p, () => { hideToast(); focusApp(); });
+  link.textContent = "Open";
+  const close = Object.assign(document.createElement("button"), { type: "button", textContent: "✕", title: "Dismiss" });
+  close.addEventListener("click", () => { hideToast(); focusApp(); });
+  toast.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Printed: " + p.title }), link, close);
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 20000);
+}
+
+// Notice new prints: a cheap directory listing every 3 s while the page is
+// visible. Prints already there when the page loads are not announced.
+const seen = new Set();
+let primed = false;
+async function checkPrints() {
+  if (document.hidden) return;
+  try {
+    const list = (await (await fetch("api/prints", { cache: "no-store" })).json()).prints;
+    const fresh = list.filter(p => !seen.has(p.name));
+    list.forEach(p => seen.add(p.name));
+    if (primed && fresh.length) showToast(fresh[0]);
+    primed = true;
+  } catch (e) {
+    // gateway restarting; try again next time
+  }
+}
+setInterval(checkPrints, 3000);
+checkPrints();
+
+button.addEventListener("click", () => { hidePrints(); panel.hidden ? openPanel() : closePanel(); });
+printsButton.addEventListener("click", () => { hidePanel(); printsPanel.hidden ? openPrints() : (hidePrints(), focusApp()); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (!panel.hidden) closePanel();
+  if (!printsPanel.hidden) { hidePrints(); focusApp(); }
+});
 // A click into the app (inside the iframe) moves focus out of this page.
-window.addEventListener("blur", () => { if (!panel.hidden) hidePanel(); });
+window.addEventListener("blur", () => { if (!panel.hidden) hidePanel(); if (!printsPanel.hidden) hidePrints(); });
 
 const wxh = s => (s || "").split("x").map(Number);
 
