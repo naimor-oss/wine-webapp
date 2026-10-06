@@ -70,7 +70,7 @@ RUN useradd -m -u 1000 -s /bin/bash webapp
 ENV PATH=/opt/wine-stable/bin:$PATH \
     WINEPREFIX=/home/webapp/.wine WINEARCH=win64 WINEDEBUG=-all \
     WINEDLLOVERRIDES="mscoree,mshtml=" \
-    WEBAPP_SCREEN=1600x900
+    WEBAPP_SCREEN=1600x900 WEBAPP_BACKGROUND="#333333" WEBAPP_NAME=""
 
 COPY rootfs-base/ /
 # strip CRs in case the scripts were checked out with Windows line endings
@@ -85,7 +85,7 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 FROM base AS vnc
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      tigervnc-standalone-server novnc python3-websockify \
+      tigervnc-standalone-server novnc python3-websockify hsetroot \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 COPY rootfs-vnc/ /
 RUN sed -i 's/\r$//' /usr/local/bin/wine-webapp-* && chmod +x /usr/local/bin/wine-webapp-*

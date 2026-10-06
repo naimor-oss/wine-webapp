@@ -1,7 +1,8 @@
 #!/bin/sh
 # noVNC front end (container entrypoint, runs as root under tini):
 #   Xvnc :1       virtual screen of WEBAPP_SCREEN, VNC on localhost:5901 only
-#   wine-webapp-gateway   noVNC web client, WebSocket bridge and window list on :8080
+#   wine-webapp-gateway   noVNC web client, WebSocket bridge, window list and
+#                 web app manifest on :8080
 #   wine-webapp-run   the app supervisor, in the foreground
 # Everything runs as user webapp. There is no VNC password: the VNC port is
 # not reachable from outside the container, and access control for :8080
@@ -15,6 +16,11 @@ if [ -n "${APP_WORKDIR:-}" ]; then
   chown webapp:webapp "$APP_WORKDIR"
 fi
 
+# A restarted container (restart policy after a crash, docker restart) keeps
+# /tmp: Xvnc refuses to start over the old lock, and the old socket would make
+# the wait below pass anyway. Nothing from the previous run is still alive.
+rm -rf /tmp/.X1-lock /tmp/.X11-unix/X1 /tmp/.wine-*
+
 runuser -u webapp -- Xvnc :1 -geometry "$WEBAPP_SCREEN" -depth 24 -rfbport 5901 \
   -localhost=1 -SecurityTypes None -AlwaysShared=1 -AcceptSetDesktopSize=0 \
   >/tmp/xvnc.log 2>&1 &
@@ -27,5 +33,14 @@ until [ -e /tmp/.X11-unix/X1 ]; do
   if [ "$i" -gt 100 ]; then echo "Xvnc did not start:" >&2; cat /tmp/xvnc.log >&2; exit 1; fi
   sleep 0.1
 done
+
+# Start-up screen: the X root shows whenever the Wine desktop is gone, that is
+# while the app is starting or restarting after the user quit. Without this it
+# is black. See docs/app-contract.md, "Start-up screen".
+if [ -f /etc/wine-webapp/splash.png ]; then
+  runuser -u webapp -- hsetroot -solid "$WEBAPP_BACKGROUND" -center /etc/wine-webapp/splash.png
+else
+  runuser -u webapp -- hsetroot -solid "$WEBAPP_BACKGROUND"
+fi >/dev/null 2>&1 || echo "could not set the start-up screen" >&2
 
 exec runuser -u webapp -- wine-webapp-run

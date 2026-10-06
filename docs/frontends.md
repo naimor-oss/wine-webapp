@@ -54,10 +54,63 @@ Each request runs `winlist.exe` once, as user `webapp`. No helper stays
 running under Wine: `wine-webapp-run` notices that the app has quit by waiting
 for `wineserver` to exit, and a resident Wine process would keep it alive.
 
+Checked from a browser 2026-10-05 with the Clarion app it was built for, by
+its user: a report program's window that had gone behind the maximized main
+window came back through the list, and quitting restarted the app.
+
 Wine's own taskbar (`explorer /desktop=...` with the shell enabled) was the
 alternative; it comes with a Start menu that lets a user launch other programs
 in the container.
-- The screen size is fixed per container (`WEBAPP_SCREEN`); noVNC scales it.
+
+### Start-up screen
+
+While the app starts, and after a user quits until it is back, there is no
+Wine desktop on the X screen and the browser showed black for a few seconds.
+The front end paints the X root window instead (`hsetroot`): the app image's
+`splash.png` centred on `WEBAPP_BACKGROUND` (`app-contract.md`, "Build-time
+hooks"). `wine-webapp-init-prefix` gives the Wine desktop the same colour, so
+the hand-over from start-up screen to app doesn't flash.
+
+The splash goes on the X root only, not as a Windows wallpaper: tried
+2026-10-05, Wine painted the wallpaper over the app's window after a restart,
+and a "starting" screen would stay visible behind every window.
+
+### Installed as an app
+
+The gateway serves a web app manifest (`/manifest.webmanifest`: `WEBAPP_NAME`,
+the image's icons, `display: standalone`), so Chrome and Edge offer to install
+the page: the app gets a desktop or Start-menu icon and opens in its own window
+with no address bar or tabs, like a native program. Launching it again focuses
+the open window (`launch_handler`). Installing needs a secure context: HTTPS
+from the reverse proxy, or `http://localhost` for a test.
+
+The page asks the installed window to take the size of the screen
+(`WEBAPP_SCREEN`) plus its frame, centred, so one browser pixel shows one
+screen pixel and noVNC doesn't scale. It does this on every start, only in the
+installed window (an ordinary tab is left alone), and only when the window fits
+on the monitor. A user can still resize it, and then it scales again. "Pixel"
+here is the browser's: on a monitor set to 125 %, the app is drawn at 125 %, as
+a non-DPI-aware program is by Windows.
+
+### Screen size
+
+The screen size is fixed per container (`WEBAPP_SCREEN`); noVNC scales it to
+the browser window. Making the screen follow the window instead (noVNC's
+`resize=remote`, Xvnc resizing to match) needs the Wine virtual desktop to
+follow, and in Wine 11.0 it doesn't, tested 2026-10-05 with Notepad maximized:
+
+- Resizing the desktop's X window (`xdotool windowsize`) leaves the Windows
+  side as it was: the maximized window keeps its size, the screen metrics
+  don't change.
+- `ChangeDisplaySettingsEx` from inside Wine refuses any size that isn't in
+  Wine's fixed list of modes (`DISP_CHANGE_BADMODE`); for 1280x720, which is
+  in the list, it reported success but left the desktop window at 1600x900
+  and the screen metrics at 1024x768.
+
+Following the window would need a change to Wine's virtual desktop in the
+fork, or running without a virtual desktop, each with its own risks. Until
+then, the installed app's window opening at the screen's size is the way to
+get an unscaled picture; pick `WEBAPP_SCREEN` to fit the users' monitors.
 
 ## Xpra (tried, not included)
 
@@ -74,26 +127,12 @@ treating the earlier experience as a verdict on Xpra.
 
 ## Open items
 
-- **Window list: not yet verified against Wine.** Tested 2026-10-05 without
-  Wine: the API and panel with a stub in place of `winlist.exe` (list,
-  filtering, raising a waiting window's dialog, cross-origin refusal), and
-  the image's gateway against a real Xvnc (noVNC connects through it, a
-  failing `winlist.exe` shows its error in the panel, closing the panel
-  puts keyboard focus back on noVNC's canvas). To reproduce without an app
-  that hides windows: run `examples/notepad`, maximize Notepad, then
-  `docker exec -u webapp <container> wine explorer /desktop=webapp regedit`
-  (same desktop name, or it opens outside the virtual desktop) and click
-  Notepad; regedit goes behind it. `playwright-cli` (developer baseline)
-  can drive the page; the button is `#win-button`. Still to do on an x86-64 host, per AGENTS.md "Verify in a
-  browser": hide a window behind a maximized one and bring it back; type
-  right after a raise; quit and check the supervisor restarts the app (no
-  Wine process left behind by the gateway). First seen 2026-09-30: a report
-  program's window and its pending dialog went behind a Clarion app's main
-  window after one click on the main menu.
-- **The supervisor stops on an app failure.** `wine-webapp-run` runs under
-  `set -e`, so a non-zero exit from `wine explorer ...` (a crash, an abort)
-  ends the script and the container instead of restarting the app as its
-  header promises. Seen 2026-10-05 when Wine aborted at start. Not fixed yet.
+- **Installed app: not yet verified in a browser.** The manifest, icons and
+  the window sizing were written 2026-10-05; still to do per AGENTS.md
+  "Verify in a browser": install from Chrome and from Edge on Windows, check
+  the window opens unscaled and centred, launch it again and check it
+  focuses the open window, and check which browser shortcuts (Ctrl+W, Ctrl+N,
+  Ctrl+T) the app window still takes from the app.
 - **Repaint lag after moving a window.** When a top-level window is dragged,
   the strip of desktop uncovered by the last move step stays stale until the
   next input event (a mouse move clears it). Cosmetic; seen with stock Wine

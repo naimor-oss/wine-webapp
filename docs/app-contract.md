@@ -31,7 +31,9 @@ there is nothing to copy).
 | `APP_WORKDIR` | directory of `APP_EXE`, or the home directory for a Windows path | Working directory. Usually a volume. The front end creates it and hands it to user `webapp`. |
 | `APP_SYNC_FROM` | empty | If set, copy program files from this directory into `APP_WORKDIR` on every start. See below. |
 | `APP_SYNC_KEEP` | `*.ini *.INI` | Globs synced only when missing (user settings). |
-| `WEBAPP_SCREEN` | `1600x900` | Size of the virtual screen and of the Wine desktop. The browser client scales it to the window. |
+| `WEBAPP_SCREEN` | `1600x900` | Size of the virtual screen and of the Wine desktop. The browser client scales it to the window; an installed app's window opens at this size (see [`frontends.md`](frontends.md), "Installed as an app"). |
+| `WEBAPP_NAME` | file name of `APP_EXE` | Name of the browser tab, and of the app when a user installs it from the browser. |
+| `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen and of the Wine desktop. `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
 
 ## Build-time hooks
 
@@ -53,6 +55,14 @@ USER root
 | `/etc/wine-webapp/prefix.d/*.reg` | Imported with `regedit`, in name order. |
 | `/etc/wine-webapp/prefix.d/*.sh` | Run with `sh` as `webapp`, in name order, `WINEPREFIX` set. |
 | `/etc/wine-webapp/fonts/*.ttf, *.otf, *.ttc` | Copied to `C:\windows\Fonts` and registered under their full names, the way a Windows installer does. Some apps check the registry, not just the folder. |
+
+Two more files are read by the front end, not by `wine-webapp-init-prefix`, so
+they need no re-run:
+
+| Location | What happens |
+| --- | --- |
+| `/etc/wine-webapp/splash.png` | Start-up screen: shown centred on `WEBAPP_BACKGROUND` while the app starts, and again after the user quits until it is back. Without it, the screen is plain `WEBAPP_BACKGROUND`. Say "starting" on it: it shows only then. |
+| `/etc/wine-webapp/icons/icon-N.png` | Square icons, N pixels wide, for the browser tab and the installed app. Browsers want at least `icon-192.png` and `icon-512.png` before they offer to install. |
 
 The base ships `prefix.d/10-disable-visual-theme.reg`, a workaround for a Wine
 bug (see [`wine-patches.md`](wine-patches.md)). An app image that does not need
@@ -79,9 +89,10 @@ touching the data.
 
 `wine-webapp-run` starts the app inside a Wine virtual desktop the size of the
 screen and waits until **all** Wine processes have exited (the app and anything
-it launched), then starts it again. A user who quits gets a fresh start screen
-on the next connect rather than an empty desktop. If the app keeps exiting
-within 10 seconds, restarts back off to every 30 seconds.
+it launched), then starts it again, whether it quit normally or crashed. A user
+who quits gets a fresh start screen on the next connect rather than an empty
+desktop, with the start-up screen in between. If the app keeps exiting within
+10 seconds, restarts back off to every 30 seconds.
 
 Anything the app launches (helper programs, report viewers, schedulers) runs
 in the same Wine prefix and shows on the same desktop.

@@ -22,8 +22,10 @@ while :; do
   start=$(date +%s)
   # APP_ARGS is split on whitespace on purpose (simple argument lists only).
   # shellcheck disable=SC2086
-  wine explorer /desktop=webapp,"$WEBAPP_SCREEN" "$APP_EXE" ${APP_ARGS:-}
-  wineserver -w
+  # A crash or an abort exits non-zero: a reason to restart, not to end the
+  # container, as set -e would.
+  wine explorer /desktop=webapp,"$WEBAPP_SCREEN" "$APP_EXE" ${APP_ARGS:-} || true
+  wineserver -w || true
   # Back off when it keeps dying right away (missing file, bad config), so a
   # broken app doesn't spin.
   if [ $(( $(date +%s) - start )) -lt 10 ]; then fails=$((fails + 1)); else fails=0; fi
