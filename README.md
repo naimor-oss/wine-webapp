@@ -12,6 +12,7 @@ fixes we need but upstream hasn't shipped yet.
 | If you want to … | Read |
 | --- | --- |
 | Package an application | [`docs/app-contract.md`](docs/app-contract.md) |
+| Pick an image tag, cut a release, keep apps current | [`docs/releases.md`](docs/releases.md) |
 | Choose or add a browser front end | [`docs/frontends.md`](docs/frontends.md) |
 | Know what we change in Wine, and why | [`docs/wine-patches.md`](docs/wine-patches.md) |
 | Check file locking across containers on a host | [`tools/locktest/`](tools/locktest/) |
@@ -56,6 +57,8 @@ the build fails at the first Wine start (`wine-webapp-init-prefix`), seen
 | `rootfs-base/` | App contract scripts and default prefix hooks |
 | `rootfs-vnc/` | TigerVNC + noVNC front end, gateway with the window list |
 | `examples/notepad/` | Smallest app image; also the smoke test |
+| `tests/smoke.sh` | Headless smoke test of an app image (gateway, Wine desktop, window) |
+| `.github/workflows/image.yml` | Build, smoke test, publish to GHCR ([`docs/releases.md`](docs/releases.md)) |
 | `tools/locktest/` | Cross-container Windows file-lock test |
 | `tools/winlist/` | List / raise windows on the Wine desktop; built into the image |
 | `docs/` | Contract, front ends, Wine patches |
@@ -63,7 +66,8 @@ the build fails at the first Wine start (`wine-webapp-init-prefix`), seen
 ## Status
 
 Early. The `vnc` front end has been tested with one Clarion application, with
-up to two users at a time. Not yet published to a container registry.
+up to two users at a time. Images are published to
+`ghcr.io/naimor-oss/wine-webapp` ([`docs/releases.md`](docs/releases.md)).
 
 ## License
 

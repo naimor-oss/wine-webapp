@@ -27,6 +27,9 @@ base
   `WINE_PATCHED_DLLS` in the `Dockerfile` change together; the patched modules
   (DLLs and `wineserver`) must be built from the same Wine release as the
   installed packages, or `wineserver` and its clients disagree on the protocol.
+- **Pins change on purpose only.** The `DEBIAN` digest, `WINE_FORK_REF` (a
+  commit, not a branch) and `WINEHQ_SIGNER_FPR` are pinned; see
+  [`docs/releases.md`](docs/releases.md) before bumping one.
 - **Every Wine change is listed** in [`docs/wine-patches.md`](docs/wine-patches.md)
   with symptom, cause, evidence and removal condition. A workaround file
   carries the same FIXME block (`dev-commons/STYLE.md` §10).
@@ -45,8 +48,9 @@ base
 ```sh
 docker build --target vnc -t wine-webapp:vnc .           # or with --build-context winesrc=../wine
 docker build -t wine-webapp-example-notepad examples/notepad
+tests/smoke.sh wine-webapp-example-notepad Notepad       # headless; CI runs this too
 docker run --rm -p 8080:8080 wine-webapp-example-notepad  # then use it from a browser
-sh -n rootfs-base/usr/local/bin/wine-webapp-* rootfs-vnc/usr/local/bin/wine-webapp-frontend
+sh -n rootfs-base/usr/local/bin/wine-webapp-* rootfs-vnc/usr/local/bin/wine-webapp-frontend tests/smoke.sh
 python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" rootfs-vnc/usr/local/bin/wine-webapp-gateway
 ```
 

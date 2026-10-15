@@ -11,15 +11,24 @@
 #   # local Wine fork checkout instead of the published branch:
 #   docker build --target vnc --build-context winesrc=../wine -t wine-webapp:vnc .
 
-ARG DEBIAN=debian:trixie-slim
+# Every input is pinned so that a rebuild of the same commit gives the same
+# image apart from Debian security updates (docs/releases.md). Bump the
+# digest with: docker buildx imagetools inspect debian:trixie-slim
+ARG DEBIAN=debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 
 # Wine release, and the WineHQ Debian package version built from it. The
 # patched modules are built from WINE_FORK_REF, which must be based on the
 # same release (wineserver also speaks that release's protocol). Change all
-# three together.
+# three together. WINE_FORK_REF is a commit on the fork's naimor/wine-11.0
+# branch, not the branch itself, so a push to the fork can't change a build.
 ARG WINE_PKG=11.0.0.0~trixie-1
 ARG WINE_FORK=https://github.com/Naimor-OSS/wine.git
-ARG WINE_FORK_REF=naimor/wine-11.0
+ARG WINE_FORK_REF=ad8e74c9d09b522c1efa1082d94a61f86f2a5c4f
+# Primary key fingerprint of https://dl.winehq.org/wine-builds/winehq.key
+ARG WINEHQ_SIGNER_FPR=D43F640145369C51D786DDEA76F1A20FF987672F
+# Set by the release build (.github/workflows/image.yml); recorded in labels.
+ARG VERSION=dev
+ARG REVISION=unknown
 # Modules rebuilt from the fork and dropped over WineHQ's copies: 32-bit PE
 # DLLs, and wineserver (build/build-wine-dlls.sh).
 ARG WINE_PATCHED_DLLS="comctl32_v6.dll user32.dll wineserver"
@@ -47,8 +56,17 @@ RUN mkdir -p /out && i686-w64-mingw32-gcc -O2 -Wall -o /out/winlist.exe /src/win
 
 # --- base: Wine + app contract
 FROM ${DEBIAN} AS base
-ARG WINE_PKG
+ARG WINE_PKG WINE_FORK WINE_FORK_REF WINEHQ_SIGNER_FPR VERSION REVISION
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
+LABEL org.opencontainers.image.title="wine-webapp" \
+      org.opencontainers.image.description="A Windows application under Wine, served to a web browser" \
+      org.opencontainers.image.source="https://github.com/naimor-oss/wine-webapp" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION" \
+      io.github.naimor-oss.wine-webapp.wine-pkg="$WINE_PKG" \
+      io.github.naimor-oss.wine-webapp.wine-fork="$WINE_FORK" \
+      io.github.naimor-oss.wine-webapp.wine-fork-ref="$WINE_FORK_REF"
 
 # WineHQ packages: Debian trixie's own wine64 lacks the 32-bit PE DLLs, and
 # most line-of-business Windows apps are 32-bit, so the i386 side is needed.
@@ -57,6 +75,8 @@ RUN dpkg --add-architecture i386 \
  && apt-get install -y --no-install-recommends ca-certificates wget gnupg \
  && mkdir -pm755 /etc/apt/keyrings \
  && wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+ && gpg --show-keys --with-colons /etc/apt/keyrings/winehq-archive.key \
+      | awk -F: '/^fpr:/ {print $10; exit}' | grep -qx "$WINEHQ_SIGNER_FPR" \
  && wget -qNP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/debian/dists/trixie/winehq-trixie.sources \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
