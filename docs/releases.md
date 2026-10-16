@@ -24,8 +24,9 @@ packages, which take whatever security updates are current. The Dockerfile pins:
 | WineHQ signing key | `WINEHQ_SIGNER_FPR`; the build fails if the downloaded key differs |
 | Patched Wine modules | `WINE_FORK_REF`, a commit on the fork's `naimor/wine-<version>` branch |
 
-Not pinned: the other Debian packages (TigerVNC, noVNC, CUPS, fonts). Pinning
-those would freeze security fixes too. The weekly rebuild picks them up instead.
+Not pinned: the other Debian packages (TigerVNC, noVNC, CUPS, fonts), and
+updates to the base image's own packages (`apt-get upgrade`). Pinning those
+would freeze security fixes too; the weekly rebuild picks them up instead.
 
 WineHQ has so far kept old package versions in its repository (8.0 to 11.0
 stable were all present in October 2026). If one disappears, the published
@@ -37,20 +38,28 @@ images still work, but rebuilding that release fails at `apt-get install`.
 
 | Tag | Changes? | Use |
 | --- | --- | --- |
-| `vnc-X.Y.Z`, `base-X.Y.Z` | no | Build app images on these. A release |
-| `vnc-YYYYMMDD-<sha>`, `base-YYYYMMDD-<sha>` | no | Every build of `main`, including the weekly one |
-| `vnc`, `base` | yes, every build of `main` | Trying things out only |
+| `vnc-X.Y.Z`, `base-X.Y.Z` | rebuilt weekly with Debian security updates, newest release only | Build app images on these |
+| `vnc-X.Y`, `base-X.Y` | as above | Same, if you take patch releases automatically |
+| `vnc-X.Y.Z-YYYYMMDD`, `base-X.Y.Z-YYYYMMDD` | no | One weekly build of a release, to pin or roll back to |
+| `vnc-YYYYMMDD-<sha>`, `base-YYYYMMDD-<sha>` | no | Every build of `main` |
+| `vnc`, `base` | every build of `main` | Trying things out only |
 
-For production, build app images on a `vnc-X.Y.Z` tag, or better, on its
-digest: `FROM ghcr.io/naimor-oss/wine-webapp:vnc-0.1.0@sha256:…`. Pull
-requests only build and test; nothing is pushed.
+Every Monday the workflow rebuilds `main` and the newest `vX.Y.Z` tag
+without build cache. The `base` stage runs `apt-get upgrade`, so the
+rebuilt images carry the current Debian security fixes. Only the newest
+release is rebuilt: move app images to it, rather than staying on an older
+one.
+
+App images should build `FROM ghcr.io/naimor-oss/wine-webapp:vnc-X.Y.Z` and
+be rebuilt weekly too, or pin `vnc-X.Y.Z-YYYYMMDD@sha256:…` and bump the pin
+on purpose. Pull requests only build and test; nothing is pushed.
 
 ## Cutting a release
 
 1. On `main`, check that the `image` workflow passed for the commit, and use
    `examples/notepad` from a browser (AGENTS.md, "Verify in a browser").
 2. Tag it: `git tag -a vX.Y.Z -m "…"` and push the tag. The workflow pushes
-   `vnc-X.Y.Z` and `base-X.Y.Z`.
+   `vnc-X.Y.Z`, `vnc-X.Y` and `vnc-X.Y.Z-<date>` (and the same for `base`).
 3. Versions: bump the minor version for a new Wine release or a change to the
    app contract, and the patch version for fixes and rebuilds. Until 1.0, the
    app contract may change in a minor release; the release notes say how.

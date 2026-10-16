@@ -70,8 +70,11 @@ LABEL org.opencontainers.image.title="wine-webapp" \
 
 # WineHQ packages: Debian trixie's own wine64 lacks the 32-bit PE DLLs, and
 # most line-of-business Windows apps are 32-bit, so the i386 side is needed.
+# The upgrade applies Debian security fixes to the pinned base image's own
+# packages; the weekly rebuild relies on it (docs/releases.md).
 RUN dpkg --add-architecture i386 \
  && apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends ca-certificates wget gnupg \
  && mkdir -pm755 /etc/apt/keyrings \
  && wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
