@@ -62,6 +62,8 @@ while :; do
   # container, as set -e would.
   wait "$launcher" 2>/dev/null || true
   wineserver -w || true
+  # wine-webapp-quit asks for the session to end: don't start the app again.
+  [ -e /run/wine-webapp/stopping ] && exit 0
   # Back off when it keeps dying right away (missing file, bad config), so a
   # broken app doesn't spin.
   if [ $(( $(date +%s) - start )) -lt 10 ]; then fails=$((fails + 1)); else fails=0; fi

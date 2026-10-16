@@ -1,0 +1,36 @@
+#!/bin/sh
+# Small helpers over xdotool for driving the app's own windows from inside the
+# container, e.g. in a login script (docs/app-contract.md, "Login"):
+#   wine-webapp-ui wait REGEX [SECONDS]   print the id of the first window whose
+#                                         title matches REGEX, waiting for it
+#   wine-webapp-ui click WIN X Y          click at X,Y relative to window WIN
+#   wine-webapp-ui type TEXT [DELAY_MS]   type TEXT into the focused control,
+#                                         slowly (default 150 ms per key)
+#   wine-webapp-ui titles                 list window titles, one per line
+# Coordinates are relative to the window, because the screen follows the
+# browser window and the app places its dialogs accordingly.
+set -eu
+export DISPLAY=${DISPLAY:-:1}
+cmd=${1:-}; [ $# -gt 0 ] && shift
+case $cmd in
+  wait)
+    t=${2:-30}; i=0
+    while :; do
+      w=$(xdotool search --name "$1" 2>/dev/null | head -n 1) || true
+      [ -n "$w" ] && { echo "$w"; exit 0; }
+      i=$((i + 1)); [ "$i" -le $((t * 2)) ] || exit 1
+      sleep 0.5
+    done ;;
+  click)
+    # xwininfo, not xdotool getwindowgeometry: xdotool doubles the position
+    # of a window whose parent isn't the root, as Wine's desktop children are.
+    x=$(xwininfo -id "$1" | sed -n 's/^ *Absolute upper-left X: *//p')
+    y=$(xwininfo -id "$1" | sed -n 's/^ *Absolute upper-left Y: *//p')
+    [ -n "$x" ] && [ -n "$y" ] || { echo "wine-webapp-ui: no window $1" >&2; exit 1; }
+    xdotool mousemove $((x + $2)) $((y + $3)) click 1 ;;
+  type)
+    xdotool type --delay "${2:-150}" -- "$1" ;;
+  titles)
+    xdotool search --name . getwindowname %@ 2>/dev/null | grep -v '^Default IME$' | sort -u ;;
+  *) echo "usage: wine-webapp-ui wait|click|type|titles ..." >&2; exit 2 ;;
+esac
