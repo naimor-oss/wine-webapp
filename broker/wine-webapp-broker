@@ -16,8 +16,9 @@ the name in a header. For each request the broker:
    browser can resize the screen or type into the form;
 5. then passes requests, WebSocket included, to that container's port 8080.
 
-It also caps the number of sessions, stops sessions idle for `idle_minutes`,
-and has a maintenance mode that ends every session and refuses new ones, for
+It also caps the number of sessions, ends idle sessions ([idle]: no key or
+mouse input for a time that depends on the time of day, with a warning on the
+page first, whether or not the browser is still open), and has a maintenance mode that ends every session and refuses new ones, for
 work that needs everyone out. Admins (`admins`) see /_broker/status and switch
 maintenance with POST /_broker/maintenance {"on": true|false}.
 
@@ -34,6 +35,7 @@ import sys
 import tarfile
 import time
 import tomllib
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -69,6 +71,7 @@ class Session:
     state: str = "stopped"  # stopped, starting, ready, failed
     reason: str = ""
     failed_at: float = 0.0
+    warned: bool = False
     task: object = None
 
 
@@ -104,6 +107,54 @@ def load_users(path, prefix):
     return users
 
 
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def parse_days(spec):
+    """'Mon-Fri', 'Sat,Sun', 'Mon-Sun' -> set of weekday numbers (Monday 0)."""
+    out = set()
+    for part in spec.lower().replace(" ", "").split(","):
+        a, _, b = part.partition("-")
+        if a not in DAYS or (b and b not in DAYS):
+            raise ConfigError(f"[idle] days {spec!r}: use Mon..Sun, ranges and commas")
+        i, j = DAYS.index(a), DAYS.index(b or a)
+        out.update(range(i, j + 1) if i <= j else [*range(i, 7), *range(0, j + 1)])
+    return out
+
+
+def parse_hhmm(t):
+    m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", t)
+    if not m:
+        raise ConfigError(f"[idle] time {t!r}: use HH:MM")
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def load_idle(c):
+    """[idle]: minutes without input before a session ends, by time of day.
+    The first matching [[idle.window]] wins; otherwise default_minutes."""
+    idle = {"default": float(c.get("default_minutes", 30)),
+            "warn": float(c.get("warn_minutes", 10)), "windows": []}
+    for w in c.get("window", []):
+        start, end = parse_hhmm(w["from"]), parse_hhmm(w["to"])
+        idle["windows"].append((parse_days(w.get("days", "Mon-Sun")), start, end,
+                                float(w["minutes"])))
+    if idle["warn"] >= min([idle["default"]] + [w[3] for w in idle["windows"]]):
+        raise ConfigError("[idle] warn_minutes must be shorter than every idle limit")
+    return idle
+
+
+def idle_limit(idle, when):
+    """Idle limit in minutes for a session idle since `when` (local time).
+    Judged at the moment input stopped: someone interrupted during the
+    working day keeps the day's generous limit even if it runs past closing."""
+    minute = when.hour * 60 + when.minute
+    for days, start, end, minutes in idle["windows"]:
+        if when.weekday() in days and (start <= minute < end if start <= end
+                                       else minute >= start or minute < end):
+            return minutes
+    return idle["default"]
+
+
 def load_config(path):
     with open(path, "rb") as f:
         c = tomllib.load(f)
@@ -116,7 +167,6 @@ def load_config(path):
         "trusted": [ipaddress.ip_network(n) for n in b.get("trusted_proxies", ["127.0.0.1/32"])],
         "admins": {a.lower() for a in b.get("admins", [])},
         "max_sessions": int(b.get("max_sessions", 10)),
-        "idle_minutes": float(b.get("idle_minutes", 240)),
         "docker": b.get("docker_socket", "/var/run/docker.sock"),
         "network": b.get("network", "wine-webapp-sessions"),
         "users_file": b.get("users_file", "/etc/wine-webapp-broker/users.toml"),
@@ -126,6 +176,7 @@ def load_config(path):
         "volumes": list(s.get("volumes", [])),
         "memory_mb": int(s.get("memory_mb", 0)),
     }
+    cfg["idle"] = load_idle(c.get("idle", {}))
     if not re.match(r"^[a-z][a-z0-9-]{0,8}$", cfg["prefix"]):
         raise ConfigError("[session] name_prefix: lower-case letters, digits, '-', at most 9")
     cfg["users"] = load_users(cfg["users_file"], cfg["prefix"])
@@ -264,6 +315,8 @@ class Broker:
         """Start (or adopt) the user's container and wait for the login."""
         try:
             s.container, s.address = await self.start(s.user)
+            # An adopted container may carry a notice from before a restart.
+            await self.set_notice(s.container, None)
             for _ in range(120):
                 st = await self.login_status(s.container)
                 word, _, reason = st.partition(" ")
@@ -283,7 +336,7 @@ class Broker:
             log.exception("starting %s", s.container)
             s.state, s.reason, s.failed_at = "failed", "the session did not start", time.monotonic()
 
-    async def session_for(self, user):
+    async def session_for(self, user, may_start=True):
         key = user.identity.lower()
         s = self.sessions.get(key)
         if s is None:
@@ -296,6 +349,16 @@ class Broker:
         # the app (some close after a few failed logins).
         if s.state == "failed" and time.monotonic() - s.failed_at > 60:
             s.state = "stopped"
+        if s.state == "stopped" and not may_start:
+            # A container still running after a broker restart is adopted;
+            # that doesn't start anything.
+            c = await self.docker.inspect(s.container)
+            may_start = bool((c or {}).get("State", {}).get("Running"))
+        if s.state == "stopped" and not may_start:
+            # The page's own background requests (notices, prints, the VNC
+            # connection) must not bring a closed session back: only the
+            # user opening or reloading the page does.
+            raise web.HTTPGone(text=json.dumps({"closed": True}), content_type="application/json")
         if s.state == "stopped":
             if self.maintenance:
                 raise web.HTTPServiceUnavailable(text="Under maintenance; try again later.\n")
@@ -319,15 +382,51 @@ class Broker:
                                    ok=(204, 304, 404))
         except RuntimeError as e:
             log.warning("stopping %s: %s", s.container, e)
-        s.address, s.state = "", "stopped"
+        s.address, s.state, s.warned = "", "stopped", False
+
+    async def idle_ms(self, name):
+        code, out = await self.docker.exec(name, ["sh", "-c", "DISPLAY=:1 xprintidle"])
+        digits = re.findall(rb"\d+", out[8:] if len(out) > 8 else out)
+        return int(digits[0]) if code == 0 and digits else None
+
+    async def set_notice(self, name, notice):
+        if notice is None:
+            await self.docker.exec(name, ["rm", "-f", "/run/wine-webapp/notice.json"])
+        else:
+            await self.docker.put_file(name, "/run/wine-webapp/notice.json",
+                                       json.dumps(notice).encode(), mode=0o444)
 
     async def reaper(self):
+        """Every minute: warn sessions nearing their idle limit, end the
+        ones past it. Idle means no key or mouse input in the session
+        (xprintidle), so an open but unattended browser counts as idle."""
+        idle = self.cfg["idle"]
         while True:
             await asyncio.sleep(60)
-            limit = self.cfg["idle_minutes"] * 60
             for s in list(self.sessions.values()):
-                if s.address and s.connections == 0 and time.monotonic() - s.last_seen > limit:
-                    await self.stop(s, "idle")
+                if s.state != "ready":
+                    continue
+                try:
+                    ms = await self.idle_ms(s.container)
+                    if ms is None:
+                        continue
+                    since = datetime.now() - timedelta(milliseconds=ms)
+                    limit = idle_limit(idle, since) * 60
+                    left = limit - ms / 1000
+                    if left <= 0:
+                        await self.stop(s, f"idle {ms // 60000} min")
+                    elif left <= idle["warn"] * 60:
+                        deadline = datetime.now() + timedelta(seconds=left)
+                        await self.set_notice(s.container, {
+                            "kind": "idle", "deadline": deadline.isoformat(timespec="minutes"),
+                            "message": f"No activity for a while. This session will close at "
+                                       f"{deadline:%H:%M} unless you use it."})
+                        s.warned = True
+                    elif s.warned:
+                        await self.set_notice(s.container, None)
+                        s.warned = False
+                except RuntimeError as e:
+                    log.warning("idle check of %s: %s", s.container, e)
 
     # --- HTTP
     async def handle(self, request):
@@ -338,7 +437,8 @@ class Broker:
         if user is None:
             log.info("refused %s: not in the users file", name)
             raise web.HTTPForbidden(text=f"{name} has no access to this application.\n")
-        s = await self.session_for(user)
+        page_load = request.method == "GET" and request.path == "/" and not request.headers.get("Upgrade")
+        s = await self.session_for(user, may_start=page_load)
         if s.state != "ready":
             return self.waiting_page(s, request)
         if request.headers.get("Upgrade", "").lower() == "websocket":

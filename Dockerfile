@@ -87,7 +87,7 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 FROM base AS vnc
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      tigervnc-standalone-server novnc python3-websockify hsetroot xdotool x11-utils \
+      tigervnc-standalone-server novnc python3-websockify hsetroot xdotool x11-utils xprintidle \
       cups printer-driver-cups-pdf libcups2t64:i386 \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 # The screen follows the browser window (remote) between the minimum and the

@@ -62,6 +62,11 @@
     border-radius: 6px; padding: 10px 14px; box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
   }
   #toast[hidden] { display: none; }
+  #notice { position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 3;
+            max-width: min(90vw, 560px); padding: 10px 16px; border-radius: 6px;
+            background: #8a5a00; color: #fff; font: 15px system-ui, sans-serif;
+            box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+  #notice[hidden] { display: none; }
   #toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #toast a { color: #9cc3ff; font-weight: 600; }
   #toast button { font: inherit; color: #ccc; background: none; border: 0; cursor: pointer; }
@@ -74,6 +79,7 @@
 <div id="win-panel" class="panel" hidden></div>
 <div id="prints-panel" class="panel" hidden></div>
 <div id="toast" role="status" hidden></div>
+<div id="notice" role="alert" hidden></div>
 <script>
 "use strict";
 const frame = document.getElementById("vnc");
@@ -228,6 +234,37 @@ async function checkPrints() {
 }
 setInterval(checkPrints, 3000);
 checkPrints();
+
+// Notices from the session broker (docs/broker.md), e.g. "this session will
+// close at 14:30 unless you use it". Shown on the page, and as a system
+// notification when the window isn't in front. Checked even while the page
+// is hidden, since that's when a notification matters.
+const noticeBox = document.getElementById("notice");
+let lastNotice = "";
+async function checkNotice() {
+  try {
+    const r = await fetch("api/notice", { cache: "no-store" });
+    // 410: the session broker closed this session (idle, maintenance).
+    const n = r.status === 410 ? { message: "This session was closed. Reload the page to continue." }
+                               : await r.json();
+    const text = n.message || "";
+    noticeBox.textContent = text;
+    noticeBox.hidden = !text;
+    if (text && text !== lastNotice && "Notification" in window
+        && Notification.permission === "granted" && (document.hidden || !document.hasFocus())) {
+      new Notification(document.title, { body: text, tag: "wine-webapp-notice", requireInteraction: true });
+    }
+    lastNotice = text;
+  } catch (e) {
+    // gateway restarting; try again next time
+  }
+}
+setInterval(checkNotice, 15000);
+checkNotice();
+// Ask once, on the first click on the page's own controls (a user gesture).
+document.getElementById("bar").addEventListener("click", () => {
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+}, { once: true });
 
 button.addEventListener("click", () => { hidePrints(); panel.hidden ? openPanel() : closePanel(); });
 printsButton.addEventListener("click", () => { hidePanel(); printsPanel.hidden ? openPrints() : (hidePrints(), focusApp()); });

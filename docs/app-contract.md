@@ -130,3 +130,21 @@ locks are visible across containers on a local Linux file system, so file-share
 databases that rely on Windows locking keep working;
 [`tools/locktest`](../tools/locktest/) checks this on a given host and storage.
 Network file systems (SMB, NFS) are not validated.
+
+## Login (with the session broker)
+
+Behind the session broker ([`broker.md`](broker.md)) the app's own login
+window is filled for the signed-in user. The app image supplies:
+
+| What | Meaning |
+| --- | --- |
+| `/etc/wine-webapp/login` | executable, run as root once each time the login window appears, with `LOGIN_WINDOW` (X window id), `LOGIN_USER`, `LOGIN_PASSWORD` and `DISPLAY` set. Exit non-zero if it can't fill the form. |
+| `WEBAPP_LOGIN_WINDOW` | regular expression matching the login window's title |
+| `WEBAPP_MAIN_WINDOW` | regular expression matching the main window's title; with the users file's `expect_title`, it tells whether the right user is signed in |
+| `/etc/wine-webapp/quit` | optional, run as user `webapp` to close the app the way a user would before a session is stopped |
+
+`wine-webapp-ui` helps write the login hook: `wait REGEX`, `click WIN X Y`
+(relative to the window, which moves with the screen size), `type TEXT
+[DELAY_MS]`. Click into each field rather than relying on Tab, and type
+slowly: apps often check a field when it is left and drop keys meanwhile.
+The hook gets one attempt per appearance of the window.

@@ -26,6 +26,9 @@ And what lets a browser install the page as an app (docs/frontends.md,
     GET  /icons/icon-N.png         the app image's icons (/etc/wine-webapp/icons)
     GET  /api/info                 app name, screen size and resize mode, for the page
 
+A notice for the user, set by the session broker (docs/broker.md), e.g.
+before an idle session is closed:
+    GET  /api/notice               {"kind", "message", "deadline"} or {}
 And the app's prints, PDFs from the cups-pdf printer (docs/frontends.md,
 "Printing"):
 
@@ -199,6 +202,13 @@ class Handler(ProxyRequestHandler):
                     self.send_file(f.read(), "image/png")
             except OSError:
                 self.reply(404, {"error": "not found"})
+            return
+        if path == "/api/notice":
+            try:
+                with open("/run/wine-webapp/notice.json") as f:
+                    self.reply(200, json.load(f))
+            except (OSError, ValueError):
+                self.reply(200, {})
             return
         if path == "/api/prints":
             self.reply(200, {"prints": prints()})

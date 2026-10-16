@@ -50,6 +50,42 @@ class Users(unittest.TestCase):
             broker.slug_of("!!!")
 
 
+class Idle(unittest.TestCase):
+    def cfg(self):
+        return broker.load_idle({"default_minutes": 30, "warn_minutes": 10, "window": [
+            {"days": "Mon-Fri", "from": "06:00", "to": "18:30", "minutes": 120},
+            {"days": "Sat", "from": "08:00", "to": "12:00", "minutes": 60}]})
+
+    def test_days(self):
+        self.assertEqual(broker.parse_days("Mon-Fri"), {0, 1, 2, 3, 4})
+        self.assertEqual(broker.parse_days("Sat,Sun"), {5, 6})
+        self.assertEqual(broker.parse_days("Fri-Mon"), {4, 5, 6, 0})
+        with self.assertRaises(broker.ConfigError):
+            broker.parse_days("Weekdays")
+
+    def test_limits_by_time_of_day(self):
+        from datetime import datetime
+        idle = self.cfg()
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 10, 0)), 120)  # Wednesday
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 18, 29)), 120)
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 18, 30)), 30)
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 5, 59)), 30)
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 17, 9, 0)), 60)    # Saturday
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 18, 9, 0)), 30)    # Sunday
+
+    def test_overnight_window(self):
+        from datetime import datetime
+        idle = broker.load_idle({"default_minutes": 30, "warn_minutes": 5, "window": [
+            {"days": "Mon-Sun", "from": "22:00", "to": "02:00", "minutes": 15}]})
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 23, 0)), 15)
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 1, 0)), 15)
+        self.assertEqual(broker.idle_limit(idle, datetime(2026, 10, 14, 3, 0)), 30)
+
+    def test_warning_must_be_shorter(self):
+        with self.assertRaises(broker.ConfigError):
+            broker.load_idle({"default_minutes": 10, "warn_minutes": 10})
+
+
 class Config(unittest.TestCase):
     def test_minimal(self):
         d = tempfile.mkdtemp()
