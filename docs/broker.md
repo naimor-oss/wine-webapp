@@ -84,6 +84,20 @@ after a few failures. If the app's main window later shows another user
 (someone quit and signed in as someone else), the app is restarted and signed
 in again as the session's user.
 
+While the app is signed in again inside a running session (after a crash,
+or after the wrong user was detected), the page covers the screen with
+"Signing in…" and the app can't be clicked or typed into, until the login
+watcher reports success.
+
+## Closing the app
+
+By default the app is started again whenever it exits, so a user who quits
+finds a fresh start screen. Behind the broker, set `WEBAPP_EXIT_ENDS_SESSION=1`
+in the app image instead: when the user closes the app, the session ends,
+the app gives up what it holds (licences, locks) at once, and the page says
+it was closed, with an "Open again" button that goes through the signing-in
+page like a first visit.
+
 ## Idle sessions
 
 A session is idle when nobody has pressed a key or moved the mouse in it

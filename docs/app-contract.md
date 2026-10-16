@@ -142,6 +142,7 @@ window is filled for the signed-in user. The app image supplies:
 | `WEBAPP_LOGIN_WINDOW` | regular expression matching the login window's title |
 | `WEBAPP_MAIN_WINDOW` | regular expression matching the main window's title; with the users file's `expect_title`, it tells whether the right user is signed in |
 | `/etc/wine-webapp/quit` | optional, run as user `webapp` to close the app the way a user would before a session is stopped |
+| `WEBAPP_EXIT_ENDS_SESSION=1` | when the app exits cleanly (the user closed it), end the session instead of starting the app again: the page then offers to open it again. Restarts after a crash or a wrong-user sign-in are unaffected |
 
 `wine-webapp-ui` helps write the login hook: `wait REGEX`, `click WIN X Y`
 (relative to the window, which moves with the screen size), `type TEXT
