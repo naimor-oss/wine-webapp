@@ -9,6 +9,7 @@ Every entry is a `FIXME(remove-when-fixed)` in the sense of
 | 1 | Mouse stops working after clicking into a text field | Patched edit controls | fork `naimor/wine-11.0`, `comctl32_v6.dll`, `user32.dll` | not filed; draft in [`upstream/`](upstream/wine-bug-edit-capture.md) |
 | 2 | Typed text invisible in text fields | Visual theme off | `rootfs-base/etc/wine-webapp/prefix.d/10-disable-visual-theme.reg` | bug not yet filed |
 | 3 | wineserver crashes (divide error) during a screen resize | Guard against an empty monitor rectangle | fork `naimor/wine-11.0`, `wineserver` | not filed |
+| 4 | Share modes not enforced between containers | Record each open's share mode as OFD locks | fork `naimor/wine-11.0`, `wineserver` | not filed |
 
 ## How patches are carried
 
@@ -117,6 +118,41 @@ restarts the app when the server dies, whatever the reason.
 **Remove when** a Wine release we ship guards that division; until then keep
 the commit when rebasing.
 
+## 4. Share modes are not enforced between wineservers
+
+**Symptom.** With one container per user on shared files, an open that
+Windows refuses with a sharing violation succeeds when the other open is in
+another container. Programs that rely on that refusal misbehave. Seen with a
+line-of-business app (2026-10-16): at sign-in it opens its licence file
+deny-write to learn whether anyone else is signed in (they keep it open for
+writing); in a second container the open succeeded, so it took itself for
+the only user and reset the file, and the first user's licence entry
+vanished. Its file repair tool, which also opens everything deny-write so
+that it runs only with everyone out, ran while users were working.
+
+**Cause (Wine 11.0, also 11.19).** Share modes live in the wineserver
+(`check_sharing()` in `server/fd.c`), which knows only the opens made through
+it, and each container runs its own wineserver. Linux has no share modes to
+pass them on with. `tools/lockmatrix` measures it: share modes hold within
+one wineserver, not between two containers or over a CIFS mount.
+
+**Fix in the fork.** Each open also records its access (read, write,
+delete) and the access it denies as shared OFD locks on reserved bytes at
+`0x7fffffff00000000`, on a read-only descriptor of its own; an open first
+tests those bytes for a conflicting lock held by another open file
+description, in any process. OFD locks follow the open file description, so
+they work between containers on the same volume. They are released when the
+handle closes; the descriptor itself is closed later, with Wine's deferred
+closes, so the server's byte-range locks on the file survive. With
+`tools/lockmatrix two-containers`, share modes then match Windows; over a
+CIFS mount they still don't (the Linux client doesn't report other
+descriptions' locks on those bytes). Not atomic across servers: two opens
+racing in different containers can both succeed.
+
+**Remove when** Wine enforces share modes between wineservers, or a
+deployment runs all users in one wineserver; until then keep the commit when
+rebasing.
+
 ## Checks after changing Wine or the patches
 
 1. Build the conformance tests from the fork and run the edit tests on a
@@ -124,3 +160,5 @@ the commit when rebasing.
    the test).
 2. Smoke test: `examples/notepad`, type text, click elsewhere, drag the window.
 3. Run `tools/locktest` if the storage layout changed.
+4. Run `tools/lockmatrix/lockmatrix.sh two-containers`: share modes and
+   byte-range locks as on Windows (patch 4).

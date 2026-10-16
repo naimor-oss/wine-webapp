@@ -23,7 +23,7 @@ ARG DEBIAN=debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2
 # branch, not the branch itself, so a push to the fork can't change a build.
 ARG WINE_PKG=11.0.0.0~trixie-1
 ARG WINE_FORK=https://github.com/Naimor-OSS/wine.git
-ARG WINE_FORK_REF=ad8e74c9d09b522c1efa1082d94a61f86f2a5c4f
+ARG WINE_FORK_REF=7c5455764bf0ca881b9ff21dfcd387c238663842
 # Primary key fingerprint of https://dl.winehq.org/wine-builds/winehq.key
 ARG WINEHQ_SIGNER_FPR=D43F640145369C51D786DDEA76F1A20FF987672F
 # Set by the release build (.github/workflows/image.yml); recorded in labels.
