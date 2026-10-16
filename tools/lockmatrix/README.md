@@ -44,12 +44,18 @@ What this means:
   same file, which the kernel (and a CIFS mount on the same host) shares
   between containers. A database that takes a lock before every change,
   such as TopSpeed's, sees other users' locks.
-- **Share modes only hold inside one wineserver.** Each container runs its
+- **Share modes only hold inside one wineserver** in stock Wine. Each container runs its
   own wineserver, which is where Wine keeps share modes, and Linux has no
   equivalent to pass them on. A CIFS mount doesn't help: the Linux client
   doesn't send deny modes to the server. An app that opens a file
   exclusively (for an index rebuild, a counter or a lock file) is protected
   from users in its own wineserver only.
+- **The fork's patch 4** ([`docs/wine-patches.md`](../../docs/wine-patches.md))
+  records share modes as OFD locks that other wineservers test. Measured
+  again with it (fork `naimor/wine-11.0` at `7c54557`, 2026-10-16): share
+  modes then match Windows between two containers on one volume; over the
+  CIFS mount they still don't, because the Linux client doesn't report other
+  descriptions' locks on those bytes.
 - **Wine has no mandatory locking**, not even inside one wineserver. On
   Windows, a process that reads or writes a range someone else has locked
   gets a lock violation and usually retries. Under Wine the read or write
