@@ -1,0 +1,57 @@
+#!/bin/sh
+# wine-webapp-gate: start the sign-in gate (Apache with mod_auth_gssapi).
+#
+# Mounted at /etc/wine-webapp-gate (read-only is fine):
+#   tls.crt      certificate chain for GATE_SERVER_NAME
+#   tls.key      its key
+#   http.keytab  the keytab for HTTP/<GATE_SERVER_NAME>@<GATE_REALM>
+#   krb5.conf    optional; without it one is written from GATE_REALM
+#                (and GATE_KDC, else the KDCs are found through DNS)
+# Environment: GATE_SERVER_NAME and GATE_REALM (required); GATE_KDC,
+# GATE_BACKEND, GATE_IDENTITY_HEADER, GATE_AUTH_NAME, GATE_SESSION_SECONDS,
+# GATE_PROXY_TIMEOUT, GATE_LOG_LEVEL (see docs/broker.md).
+set -eu
+conf=/etc/wine-webapp-gate
+run=/run/wine-webapp-gate
+
+: "${GATE_SERVER_NAME:?set GATE_SERVER_NAME to the gate's host name}"
+: "${GATE_REALM:?set GATE_REALM to the Kerberos realm}"
+export GATE_SERVER_NAME GATE_REALM
+export GATE_BACKEND="${GATE_BACKEND:-http://broker:8000}"
+export GATE_IDENTITY_HEADER="${GATE_IDENTITY_HEADER:-X-Remote-User}"
+export GATE_AUTH_NAME="${GATE_AUTH_NAME:-Sign in}"
+export GATE_SESSION_SECONDS="${GATE_SESSION_SECONDS:-43200}"
+# An idle screen WebSocket may carry nothing for a while; Apache closes a
+# tunnel idle for longer than this.
+export GATE_PROXY_TIMEOUT="${GATE_PROXY_TIMEOUT:-3600}"
+export GATE_LOG_LEVEL="${GATE_LOG_LEVEL:-warn}"
+
+for f in tls.crt tls.key http.keytab; do
+  [ -r "$conf/$f" ] || { echo "wine-webapp-gate: missing $conf/$f" >&2; exit 1; }
+done
+
+# Apache's workers run as www-data and read the keytab per request; the
+# mounted copy stays as its owner made it. The session key is new on each
+# start, so a restart signs everyone in again (silently, with Kerberos).
+install -d -m 0755 "$run"
+install -m 0400 -o www-data -g www-data "$conf/http.keytab" "$run/http.keytab"
+rm -f "$run/session.key"
+
+if [ -r "$conf/krb5.conf" ]; then
+  cp "$conf/krb5.conf" /etc/krb5.conf
+else
+  {
+    printf '[libdefaults]\n  default_realm = %s\n' "$GATE_REALM"
+    printf '  dns_lookup_realm = false\n  rdns = false\n  dns_canonicalize_hostname = false\n'
+    if [ -n "${GATE_KDC:-}" ]; then
+      printf '  dns_lookup_kdc = false\n[realms]\n  %s = {\n    kdc = %s\n  }\n' "$GATE_REALM" "$GATE_KDC"
+    else
+      printf '  dns_lookup_kdc = true\n'
+    fi
+  } > /etc/krb5.conf
+fi
+
+set +u   # Debian's envvars reads variables that may be unset
+. /etc/apache2/envvars
+mkdir -p "$APACHE_RUN_DIR" "$APACHE_LOCK_DIR"
+exec apache2 -DFOREGROUND

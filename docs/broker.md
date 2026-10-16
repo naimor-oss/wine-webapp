@@ -11,6 +11,7 @@ front of it decides who the user is.
 | --- | --- |
 | Understand the pieces | [Shape](#shape) |
 | Configure it | [Configuration](#configuration), `broker/example.toml` |
+| Put the Kerberos sign-in gate in front | [The sign-in gate](#the-sign-in-gate), `gate/` |
 | Sign the user in to the app itself | [`app-contract.md`](app-contract.md), "Login" |
 | Close idle sessions | [Idle sessions](#idle-sessions) |
 | Run something that needs everyone out | [Maintenance](#maintenance) |
@@ -70,6 +71,58 @@ expect_title = "(Alice Doe)" # text the app's main window shows when she is sign
 Run the broker in its own container on the network the session containers
 use, with the Docker socket and the configuration mounted, and the gate in
 front: see `broker/Dockerfile`.
+
+## The sign-in gate
+
+`gate/` is a gate for a Windows domain or any Kerberos realm: Apache with
+`mod_auth_gssapi`. A browser that has a ticket and is allowed to use it for
+the site signs in silently (SPNEGO). Any other browser gets its own sign-in
+prompt, and the gate checks the user name and password against the KDC with
+the same keytab. Either way the broker receives the Kerberos principal,
+`alice@EXAMPLE.COM`, the users file's key. A typed name without a realm gets
+the default realm; `DOMAIN\alice` is not understood.
+
+```sh
+docker build -t wine-webapp-gate gate/
+docker run -d --name gate --network <the sessions' network> -p 443:443 \
+  -e GATE_SERVER_NAME=app.example.com -e GATE_REALM=EXAMPLE.COM \
+  -v /path/to/gate-files:/etc/wine-webapp-gate:ro wine-webapp-gate
+sh gate/test.sh    # end to end against a throwaway KDC; leaves nothing behind
+```
+
+`/etc/wine-webapp-gate` holds `tls.crt` (the chain), `tls.key`,
+`http.keytab` (for `HTTP/<GATE_SERVER_NAME>@<GATE_REALM>`) and optionally
+`krb5.conf`. The keytab and the key are secrets: keep the folder readable by
+root only.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GATE_SERVER_NAME` | (required) | the host name browsers use; the service principal is `HTTP/` that name |
+| `GATE_REALM` | (required) | the Kerberos realm, upper case |
+| `GATE_KDC` | from DNS | KDC host(s), when DNS `_kerberos` records can't be used |
+| `GATE_BACKEND` | `http://broker:8000` | the broker |
+| `GATE_IDENTITY_HEADER` | `X-Remote-User` | as `[broker] identity_header` |
+| `GATE_AUTH_NAME` | `Sign in` | the realm name shown in the password prompt |
+| `GATE_SESSION_SECONDS` | `43200` | how long a sign-in lasts before the browser is asked again |
+| `GATE_PROXY_TIMEOUT` | `3600` | seconds an idle request or WebSocket is kept |
+| `GATE_LOG_LEVEL` | `warn` | Apache `LogLevel`, e.g. `warn auth_gssapi:debug` |
+
+What the domain side needs:
+
+- **A service account and keytab:** an account with the SPN
+  `HTTP/<GATE_SERVER_NAME>` and AES keys, and a keytab exported for it.
+- **The name as an A record, not a CNAME.** Browsers build the SPN from the
+  canonical name.
+- **Browser policy.** Chrome and Edge offer Kerberos only to sites in their
+  allowlist (`AuthServerAllowlist`). Without it, the user gets the password
+  prompt.
+- **The gate reaches a KDC for typed passwords.** A silent Kerberos sign-in
+  needs only the keytab.
+
+After a sign-in the browser holds a session cookie (`GssapiUseSessions`), so
+the screen's WebSocket doesn't negotiate again. The cookie's key is new on
+each start of the gate, so a restart asks everyone again: silently with
+Kerberos, with a prompt for password users.
 
 ## Signing in to the app
 
