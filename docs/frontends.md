@@ -167,6 +167,36 @@ had registered (seen 2026-10-06).
 Not covered: paper printers on the network (labels, route sheets), and
 e-mailing a print instead; both would be more CUPS queues.
 
+### Excel output
+
+Many line-of-business programs "export to Excel" by starting Excel through
+its automation interface and filling a sheet cell by cell, then making Excel
+visible for the user. There is no Excel here, so the base image carries a
+stand-in, `xlstub.dll` (`tools/xlstub/`), that an app image opts in to:
+
+```dockerfile
+RUN cp /usr/local/share/wine-webapp/excel-stub.sh /etc/wine-webapp/prefix.d/40-excel-stub.sh
+USER webapp
+RUN wine-webapp-init-prefix
+```
+
+It registers as `Excel.Application` and keeps the values and number formats
+the program writes. When the program shows the workbook, saves, closes or
+quits, the sheet goes to a staging folder (`%USERPROFILE%\.exports` in the
+prefix), and the gateway turns it into an `.xlsx` with numbers as numbers and
+the program's number formats. It is listed with the prints (the "Prints" tab
+and the notice), named after the sheet's first text, and downloads rather
+than opens. Calls the stand-in doesn't know are accepted and ignored, and
+listed once each in `.exports\xlstub.log`: if a program's sheet comes out
+incomplete, that log says what it used.
+
+What it understands: `Visible`, `Workbooks.Add`, `ActiveWorkbook`,
+`ActiveSheet`, `Worksheets`/`Sheets`, `Cells(row, col)`, `Range("A1")`,
+`ActiveCell`, `Selection`, `Select`/`Activate`, `Value`/`Value2`/`Formula`/
+`FormulaR1C1`/`Text`, `NumberFormat`, `Offset`, `Close`/`Save`/`SaveAs`/`Quit`
+(formatting such as fonts, widths and `AutoFit` is accepted and ignored).
+One sheet per workbook; formulas are kept as their text.
+
 ## Xpra (tried, not included)
 
 Xpra was the first choice because its HTML5 client can forward print jobs to

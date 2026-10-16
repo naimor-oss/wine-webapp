@@ -57,6 +57,7 @@ the build fails at the first Wine start (`wine-webapp-init-prefix`), seen
 | `rootfs-vnc/` | TigerVNC + noVNC front end, gateway with the window list |
 | `examples/notepad/` | Smallest app image; also the smoke test |
 | `tools/locktest/` | Cross-container Windows file-lock test |
+| `tools/xlstub/` | Excel stand-in: an app's "export to Excel" becomes an `.xlsx` download |
 | `tools/winlist/` | List / raise windows on the Wine desktop; built into the image |
 | `docs/` | Contract, front ends, Wine patches |
 

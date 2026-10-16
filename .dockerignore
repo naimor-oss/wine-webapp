@@ -3,6 +3,7 @@
 examples
 tools/*
 !tools/winlist/winlist.c
+!tools/xlstub/xlstub.c
 docs
 test-results
 dist
