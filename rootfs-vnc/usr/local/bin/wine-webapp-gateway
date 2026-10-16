@@ -29,6 +29,8 @@ And what lets a browser install the page as an app (docs/frontends.md,
 A notice for the user, set by the session broker (docs/broker.md), e.g.
 before an idle session is closed:
     GET  /api/notice               {"kind", "message", "deadline"} or {}
+    GET  /api/login                {"state": "waiting|filling|ok|failed|mismatch"}, or {}
+                                   without the broker's login watcher
 And the app's prints, PDFs from the cups-pdf printer (docs/frontends.md,
 "Printing"):
 
@@ -202,6 +204,13 @@ class Handler(ProxyRequestHandler):
                     self.send_file(f.read(), "image/png")
             except OSError:
                 self.reply(404, {"error": "not found"})
+            return
+        if path == "/api/login":
+            try:
+                with open("/run/wine-webapp/login.state") as f:
+                    self.reply(200, {"state": f.read().strip()})
+            except OSError:
+                self.reply(200, {})
             return
         if path == "/api/notice":
             try:

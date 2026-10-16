@@ -61,6 +61,8 @@ rm -f /run/cups/cupsd.pid /run/cups/cups.sock
 # CUPS runs print steps with a clean environment; they read the container's
 # WEBAPP_* settings from here (wine-webapp-print-hooks).
 mkdir -p /run/wine-webapp
+# Markers between the login watcher (root) and the supervisor (webapp).
+install -d -o webapp -g webapp /run/wine-webapp/app
 env | grep '^WEBAPP_' | sed "s/'/'\\\\''/g; s/=/='/; s/\$/'/; s/^/export /" > /run/wine-webapp/env
 chmod 644 /run/wine-webapp/env
 cupsd

@@ -72,6 +72,7 @@ class Session:
     reason: str = ""
     failed_at: float = 0.0
     warned: bool = False
+    ended: str = ""         # why the last session ended: closed, idle, maintenance, ...
     task: object = None
 
 
@@ -344,7 +345,10 @@ class Broker:
         if s.state == "ready":
             c = await self.docker.inspect(s.container)
             if not (c or {}).get("State", {}).get("Running"):
-                s.state, s.address = "stopped", ""
+                # Gone without the broker stopping it: the user closed the
+                # app (WEBAPP_EXIT_ENDS_SESSION), or it crashed.
+                s.state, s.address, s.ended = "stopped", "", "closed"
+                log.info("%s ended: the app was closed", s.container)
         # One login attempt per minute at most: a bad mapping must not hammer
         # the app (some close after a few failed logins).
         if s.state == "failed" and time.monotonic() - s.failed_at > 60:
@@ -358,7 +362,8 @@ class Broker:
             # The page's own background requests (notices, prints, the VNC
             # connection) must not bring a closed session back: only the
             # user opening or reloading the page does.
-            raise web.HTTPGone(text=json.dumps({"closed": True}), content_type="application/json")
+            raise web.HTTPGone(text=json.dumps({"closed": True, "reason": s.ended or "closed"}),
+                               content_type="application/json")
         if s.state == "stopped":
             if self.maintenance:
                 raise web.HTTPServiceUnavailable(text="Under maintenance; try again later.\n")
@@ -375,6 +380,7 @@ class Broker:
         """End a session: the app closes itself first (wine-webapp-quit), so
         nothing is cut off mid-write, unless nobody is signed in to it."""
         log.info("stopping %s (%s)", s.container, reason)
+        s.ended = "idle" if reason.startswith("idle") else reason.split()[0]
         try:
             if graceful:
                 await self.docker.exec(s.container, ["/usr/local/bin/wine-webapp-quit"])

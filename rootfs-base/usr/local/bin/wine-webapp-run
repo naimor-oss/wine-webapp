@@ -3,7 +3,10 @@
 # set. Runs APP_EXE inside a Wine virtual desktop (WEBAPP_DESKTOP_SIZE when the
 # front end sets it, else the size of the display) and starts it again
 # whenever it exits, so a user who quits (or a crash) gets a fresh start
-# screen on the next browser connect instead of an empty desktop.
+# screen on the next browser connect instead of an empty desktop. With
+# WEBAPP_EXIT_ENDS_SESSION=1 (behind the session broker), an app that exits
+# cleanly ends the session instead: the container stops, and the page offers
+# to open the app again.
 #
 # Contract: docs/app-contract.md
 set -eu
@@ -31,6 +34,7 @@ server_pid() {
 # explorer launcher included, so waiting for them never returns and the user
 # sees a frozen or black screen. Watch the server the app started with; when
 # it is gone, kill what is left of the app so the loop restarts it.
+died=0
 watch_server() {
   app=$1 server=
   while kill -0 "$app" 2>/dev/null; do
@@ -38,6 +42,7 @@ watch_server() {
       server=$(server_pid)
     elif [ ! -d "/proc/$server" ]; then
       echo "wine-webapp-run: wineserver $server died; restarting the app" >&2
+      died=1
       for p in /proc/[0-9]*; do
         # Wine processes show as their .exe name (not the gateway or this script)
         case $(cat "$p/comm" 2>/dev/null) in
@@ -57,13 +62,24 @@ while :; do
   # shellcheck disable=SC2086
   wine explorer /desktop=webapp,"${WEBAPP_DESKTOP_SIZE:-$WEBAPP_SCREEN}" "$APP_EXE" ${APP_ARGS:-} &
   launcher=$!
+  died=0
   watch_server "$launcher"
   # A crash or an abort exits non-zero: a reason to restart, not to end the
   # container, as set -e would.
-  wait "$launcher" 2>/dev/null || true
+  rc=0
+  wait "$launcher" 2>/dev/null || rc=$?
   wineserver -w || true
   # wine-webapp-quit asks for the session to end: don't start the app again.
   [ -e /run/wine-webapp/stopping ] && exit 0
+  # The user closed the app (a clean exit, not a crash, a dead server or a
+  # restart the login watcher asked for): end the session.
+  if [ "${WEBAPP_EXIT_ENDS_SESSION:-0}" = 1 ] && [ "$rc" = 0 ] && [ "$died" = 0 ] &&
+     [ ! -e /run/wine-webapp/app/restart ]; then
+    echo "wine-webapp-run: the app was closed; ending the session" >&2
+    touch /run/wine-webapp/app/exited 2>/dev/null || true
+    exit 0
+  fi
+  rm -f /run/wine-webapp/app/restart
   # Back off when it keeps dying right away (missing file, bad config), so a
   # broken app doesn't spin.
   if [ $(( $(date +%s) - start )) -lt 10 ]; then fails=$((fails + 1)); else fails=0; fi

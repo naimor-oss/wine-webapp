@@ -67,6 +67,12 @@
             background: #8a5a00; color: #fff; font: 15px system-ui, sans-serif;
             box-shadow: 0 2px 8px rgba(0,0,0,.4); }
   #notice[hidden] { display: none; }
+  #cover { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center;
+           background: var(--cover-bg, rgba(32, 32, 32, .82)); color: #fff;
+           font: 18px system-ui, sans-serif; text-align: center; }
+  #cover[hidden] { display: none; }
+  #cover button { margin-top: 12px; font: inherit; padding: 8px 20px; border-radius: 6px;
+                  border: 0; background: #2f6fd0; color: #fff; cursor: pointer; }
   #toast span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #toast a { color: #9cc3ff; font-weight: 600; }
   #toast button { font: inherit; color: #ccc; background: none; border: 0; cursor: pointer; }
@@ -80,6 +86,7 @@
 <div id="prints-panel" class="panel" hidden></div>
 <div id="toast" role="status" hidden></div>
 <div id="notice" role="alert" hidden></div>
+<div id="cover" hidden><div><p id="cover-text"></p><button id="cover-button" type="button" hidden>Open again</button></div></div>
 <script>
 "use strict";
 const frame = document.getElementById("vnc");
@@ -244,9 +251,13 @@ let lastNotice = "";
 async function checkNotice() {
   try {
     const r = await fetch("api/notice", { cache: "no-store" });
-    // 410: the session broker closed this session (idle, maintenance).
-    const n = r.status === 410 ? { message: "This session was closed. Reload the page to continue." }
-                               : await r.json();
+    // 410: the session broker ended this session; say why and offer to reopen.
+    if (r.status === 410) {
+      const why = (await r.json().catch(() => ({}))).reason || "closed";
+      closed(why);
+      return;
+    }
+    const n = await r.json();
     const text = n.message || "";
     noticeBox.textContent = text;
     noticeBox.hidden = !text;
@@ -261,6 +272,47 @@ async function checkNotice() {
 }
 setInterval(checkNotice, 15000);
 checkNotice();
+
+// The cover: while the session broker's login watcher signs the user in to
+// the app (after a restart, for instance), or after the session ended.
+// While it shows, the app can't be clicked or typed into.
+const cover = document.getElementById("cover");
+const coverText = document.getElementById("cover-text");
+const coverButton = document.getElementById("cover-button");
+coverButton.addEventListener("click", () => location.reload());
+let ended = false;
+function showCover(text, reopen) {
+  coverText.textContent = text;
+  coverButton.hidden = !reopen;
+  cover.hidden = false;
+  frame.inert = true;
+}
+function hideCover() {
+  cover.hidden = true;
+  frame.inert = false;
+}
+function closed(why) {
+  ended = true;
+  const name = document.title || "The app";
+  const text = { closed: `${name} was closed.`, idle: "This session was closed after a time without activity.",
+                 maintenance: "This session was closed for maintenance." }[why] || "This session was closed.";
+  showCover(text, true);
+}
+async function checkLogin() {
+  if (ended) return;
+  try {
+    const r = await fetch("api/login", { cache: "no-store" });
+    if (r.status === 410) { closed((await r.json().catch(() => ({}))).reason); return; }
+    const state = (await r.json()).state;
+    if (state === "waiting" || state === "filling" || state === "mismatch") showCover("Signing in…", false);
+    else if (state === "failed") showCover("Could not sign you in. Try again in a minute.", true);
+    else hideCover();
+  } catch (e) {
+    // gateway restarting; try again next time
+  }
+}
+setInterval(checkLogin, 1500);
+checkLogin();
 // Ask once, on the first click on the page's own controls (a user gesture).
 document.getElementById("bar").addEventListener("click", () => {
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
