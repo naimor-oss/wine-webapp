@@ -14,7 +14,7 @@ fixes we need but upstream hasn't shipped yet.
 | Package an application | [`docs/app-contract.md`](docs/app-contract.md) |
 | Choose or add a browser front end | [`docs/frontends.md`](docs/frontends.md) |
 | Know what we change in Wine, and why | [`docs/wine-patches.md`](docs/wine-patches.md) |
-| Check file locking across containers on a host | [`tools/locktest/`](tools/locktest/) |
+| Check file locking across containers on a host | [`tools/lockmatrix/`](tools/lockmatrix/) (results there), [`tools/locktest/`](tools/locktest/) |
 | Find or raise a window hidden behind others | The "Windows" button in the browser ([`docs/frontends.md`](docs/frontends.md)); [`tools/winlist/`](tools/winlist/) underneath |
 | Work on this repo as an agent | [`AGENTS.md`](AGENTS.md) |
 
