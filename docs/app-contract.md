@@ -39,7 +39,7 @@ there is nothing to copy).
 | `WEBAPP_PAPER` | `Letter` | Paper size of the PDF printer (a CUPS `PageSize`, e.g. `A4`). See [`frontends.md`](frontends.md), "Printing". |
 | `WEBAPP_PRINTS_KEEP_HOURS` | `24` | How long prints stay available to the browser before they are deleted. |
 | `WEBAPP_NAME` | file name of `APP_EXE` | Name of the browser tab, and of the app when a user installs it from the browser. |
-| `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen and of the Wine desktop. `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
+| `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen, the Wine desktop and the page around them (signing in, closed).  `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
 
 ## Build-time hooks
 
@@ -67,7 +67,7 @@ they need no re-run:
 
 | Location | What happens |
 | --- | --- |
-| `/etc/wine-webapp/splash.png` | Start-up screen: shown centred on `WEBAPP_BACKGROUND` while the app starts, and again after the user quits until it is back. Without it, the screen is plain `WEBAPP_BACKGROUND`. Say "starting" on it: it shows only then. |
+| `/etc/wine-webapp/splash.png` | Start-up screen: shown centred on `WEBAPP_BACKGROUND` while the app starts, and again after the user quits until it is back. Without it, the screen is plain `WEBAPP_BACKGROUND`. Say "starting" on it: it shows only then. Not shown with `WEBAPP_EXIT_ENDS_SESSION=1`, where quitting ends the session. |
 | `/etc/wine-webapp/icons/icon-N.png` | Square icons, N pixels wide, for the browser tab and the installed app. Browsers want at least `icon-192.png` and `icon-512.png` before they offer to install. |
 | `/etc/wine-webapp/print.d/*` | Print steps: run on every print, in name order, before it reaches the browser (rename it, stamp it, copy it somewhere). Contract in [`frontends.md`](frontends.md), "Printing". |
 

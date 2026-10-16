@@ -24,7 +24,7 @@ And what lets a browser install the page as an app (docs/frontends.md,
 
     GET  /manifest.webmanifest     web app manifest: name, icons, standalone window
     GET  /icons/icon-N.png         the app image's icons (/etc/wine-webapp/icons)
-    GET  /api/info                 app name, screen size and resize mode, for the page
+    GET  /api/info                 app name, colour, screen size and resize mode, for the page
 
 A notice for the user, set by the session broker (docs/broker.md), e.g.
 before an idle session is closed:
@@ -192,6 +192,7 @@ class Handler(ProxyRequestHandler):
                 "resize": os.environ.get("WEBAPP_RESIZE", "scale"),
                 "min": os.environ.get("WEBAPP_SCREEN_MIN", ""),
                 "max": os.environ.get("WEBAPP_SCREEN_MAX", ""),
+                "background": os.environ.get("WEBAPP_BACKGROUND", "#333333"),
             })
             return
         if path == "/manifest.webmanifest":
@@ -285,6 +286,14 @@ class Handler(ProxyRequestHandler):
             self.reply(200, {"screen": "%dx%d" % (w, h)})
         except RuntimeError as e:
             self.reply(409, {"error": str(e)})
+
+    def end_headers(self):
+        # The page itself is never cached: reopening an installed app's
+        # window must load it afresh (and, behind the broker, start a
+        # session), not bring back a page whose session has ended.
+        if urlsplit(self.path).path in ("/", "/index.html"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def reply(self, status, body, content_type="application/json"):
         data = json.dumps(body).encode()

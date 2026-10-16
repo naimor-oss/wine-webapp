@@ -18,8 +18,10 @@ the name in a header. For each request the broker:
 
 It also caps the number of sessions, ends idle sessions ([idle]: no key or
 mouse input for a time that depends on the time of day, with a warning on the
-page first, whether or not the browser is still open), and has a maintenance mode that ends every session and refuses new ones, for
-work that needs everyone out. Admins (`admins`) see /_broker/status and switch
+page first, whether or not the browser is still open), ends sessions whose
+page was closed a while ago ([idle] detached_minutes), and has a
+maintenance mode that ends every session and refuses new ones, for work that
+needs everyone out. Admins (`admins`) see /_broker/status and switch
 maintenance with POST /_broker/maintenance {"on": true|false}.
 
 Only the broker talks to Docker; its socket is root on the host.
@@ -68,10 +70,12 @@ class Session:
     address: str = ""
     connections: int = 0
     last_seen: float = field(default_factory=time.monotonic)
-    state: str = "stopped"  # stopped, starting, ready, failed
+    state: str = "stopped"  # stopped, starting, ready, stopping, failed
     reason: str = ""
     failed_at: float = 0.0
     warned: bool = False
+    detached_since: float = 0.0  # when the last browser connection closed
+    closed_at: float = 0.0       # when the page said it was being closed
     ended: str = ""         # why the last session ended: closed, idle, maintenance, ...
     task: object = None
 
@@ -134,7 +138,10 @@ def load_idle(c):
     """[idle]: minutes without input before a session ends, by time of day.
     The first matching [[idle.window]] wins; otherwise default_minutes."""
     idle = {"default": float(c.get("default_minutes", 30)),
-            "warn": float(c.get("warn_minutes", 10)), "windows": []}
+            "warn": float(c.get("warn_minutes", 10)),
+            "detached": float(c.get("detached_minutes", 10)), "windows": []}
+    if idle["detached"] < 0:
+        raise ConfigError("[idle] detached_minutes: 0 (never) or more")
     for w in c.get("window", []):
         start, end = parse_hhmm(w["from"]), parse_hhmm(w["to"])
         idle["windows"].append((parse_days(w.get("days", "Mon-Sun")), start, end,
@@ -154,6 +161,15 @@ def idle_limit(idle, when):
                                        else minute >= start or minute < end):
             return minutes
     return idle["default"]
+
+
+def detached_too_long(s, idle, now):
+    """True when the user closed the session's page (it said so, on its way
+    out) and none has connected for detached_minutes (0: never). A page
+    that just went away (a computer asleep, a network drop) doesn't count:
+    the idle limits deal with those."""
+    return bool(idle["detached"] and s.closed_at and s.connections == 0
+                and now - max(s.closed_at, s.detached_since) >= idle["detached"] * 60)
 
 
 def load_config(path):
@@ -243,6 +259,21 @@ class Broker:
         self.sessions = {}          # identity (lower) -> Session
         self.maintenance = False
         self.http = aiohttp.ClientSession(auto_decompress=False)
+        # The app's name and colour, for the signing-in page; read from the
+        # image (load_branding), [session] env wins.
+        self.name, self.background = "Application", "#333333"
+
+    async def load_branding(self):
+        env = {}
+        try:
+            image = await self.docker.call("GET", f"/images/{self.cfg['image']}/json")
+            env = dict(e.split("=", 1) for e in image["Config"].get("Env") or [] if "=" in e)
+        except RuntimeError as e:
+            log.warning("reading %s: %s", self.cfg["image"], e)
+        env.update(self.cfg["env"])
+        self.name = env.get("WEBAPP_NAME") or self.name
+        if re.match(r"^#[0-9a-fA-F]{6}$", env.get("WEBAPP_BACKGROUND", "")):
+            self.background = env["WEBAPP_BACKGROUND"]
 
     # --- who is asking
     def identity(self, request):
@@ -323,6 +354,7 @@ class Broker:
                 word, _, reason = st.partition(" ")
                 if word == "ok":
                     s.state = "ready"
+                    s.detached_since = time.monotonic()  # no page attached yet
                     log.info("%s signed in", s.container)
                     return
                 if word in ("failed", "mismatch"):
@@ -344,7 +376,8 @@ class Broker:
             s = self.sessions[key] = Session(user=user, container=self.container_name(user))
         if s.state == "ready":
             c = await self.docker.inspect(s.container)
-            if not (c or {}).get("State", {}).get("Running"):
+            # Several requests can get here at once; the first one ends it.
+            if s.state == "ready" and not (c or {}).get("State", {}).get("Running"):
                 # Gone without the broker stopping it: the user closed the
                 # app (WEBAPP_EXIT_ENDS_SESSION), or it crashed.
                 s.state, s.address, s.ended = "stopped", "", "closed"
@@ -363,7 +396,8 @@ class Broker:
             # connection) must not bring a closed session back: only the
             # user opening or reloading the page does.
             raise web.HTTPGone(text=json.dumps({"closed": True, "reason": s.ended or "closed"}),
-                               content_type="application/json")
+                               content_type="application/json",
+                               headers={"Cache-Control": "no-store"})
         if s.state == "stopped":
             if self.maintenance:
                 raise web.HTTPServiceUnavailable(text="Under maintenance; try again later.\n")
@@ -380,7 +414,10 @@ class Broker:
         """End a session: the app closes itself first (wine-webapp-quit), so
         nothing is cut off mid-write, unless nobody is signed in to it."""
         log.info("stopping %s (%s)", s.container, reason)
-        s.ended = "idle" if reason.startswith("idle") else reason.split()[0]
+        # Not ready any more: a page load meanwhile waits, then starts anew,
+        # instead of reaching the app while it quits.
+        s.state = "stopping"
+        s.ended = reason.split()[0]
         try:
             if graceful:
                 await self.docker.exec(s.container, ["/usr/local/bin/wine-webapp-quit"])
@@ -388,7 +425,7 @@ class Broker:
                                    ok=(204, 304, 404))
         except RuntimeError as e:
             log.warning("stopping %s: %s", s.container, e)
-        s.address, s.state, s.warned = "", "stopped", False
+        s.address, s.state, s.warned, s.closed_at = "", "stopped", False, 0.0
 
     async def idle_ms(self, name):
         code, out = await self.docker.exec(name, ["sh", "-c", "DISPLAY=:1 xprintidle"])
@@ -403,7 +440,8 @@ class Broker:
                                        json.dumps(notice).encode(), mode=0o444)
 
     async def reaper(self):
-        """Every minute: warn sessions nearing their idle limit, end the
+        """Every minute: end sessions whose page has been closed for
+        detached_minutes, warn sessions nearing their idle limit, end the
         ones past it. Idle means no key or mouse input in the session
         (xprintidle), so an open but unattended browser counts as idle."""
         idle = self.cfg["idle"]
@@ -413,6 +451,14 @@ class Broker:
                 if s.state != "ready":
                     continue
                 try:
+                    # The user closed the page (tab, window) and didn't come
+                    # back: close the app as if they had, so it gives up its
+                    # licence and the next visit starts afresh. A reload
+                    # reconnects well within this.
+                    now = time.monotonic()
+                    if detached_too_long(s, idle, now):
+                        await self.stop(s, f"detached {int((now - s.detached_since) // 60)} min")
+                        continue
                     ms = await self.idle_ms(s.container)
                     if ms is None:
                         continue
@@ -443,30 +489,45 @@ class Broker:
         if user is None:
             log.info("refused %s: not in the users file", name)
             raise web.HTTPForbidden(text=f"{name} has no access to this application.\n")
+        if request.path == "/_session/closing":
+            # The page's beacon as its tab or window closes (index.html).
+            s = self.sessions.get(user.identity.lower())
+            if s is not None and request.method == "POST":
+                s.closed_at = time.monotonic()
+            return web.Response(status=204)
         page_load = request.method == "GET" and request.path == "/" and not request.headers.get("Upgrade")
         s = await self.session_for(user, may_start=page_load)
         if s.state != "ready":
             return self.waiting_page(s, request)
         if request.headers.get("Upgrade", "").lower() == "websocket":
             return await self.proxy_ws(request, s)
-        return await self.proxy_http(request, s)
+        return await self.proxy_http(request, s, page_load)
 
     def waiting_page(self, s, request):
+        """The page while the session starts: the app's name on its
+        background colour, the same as the app page's own cover (index.html),
+        so the hand-over doesn't flash. Never cached: reopening the window
+        must reach the broker, not show an old page."""
         if s.state == "failed":
             body = (f"<p>Could not sign you in: {html.escape(s.reason)}.</p>"
                     "<p>Try again in a minute, or ask your administrator.</p>")
             status, refresh = 503, ""
         else:
-            body, status = "<p>Signing you in&hellip;</p>", 200
+            body, status = "<p>Signing in&hellip;</p>", 200
             refresh = '<meta http-equiv="refresh" content="2">'
         if request.path != "/" or request.headers.get("Upgrade"):
             raise web.HTTPServiceUnavailable(text=f"Session {s.state}.\n")
-        return web.Response(status=status, content_type="text/html", text=(
-            f"<!doctype html><html><head><meta charset=utf-8>{refresh}<title>Signing in</title>"
-            "<style>body{font:16px system-ui,sans-serif;display:grid;place-items:center;"
-            f"height:90vh;margin:0}}</style></head><body>{body}</body></html>"))
+        name = html.escape(self.name)
+        return web.Response(status=status, content_type="text/html",
+                            headers={"Cache-Control": "no-store"}, text=(
+            f"<!doctype html><html><head><meta charset=utf-8>{refresh}<title>{name}</title>"
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f"<style>html,body{{height:100%;margin:0;background:{self.background};color:#fff}}"
+            "body{display:grid;place-items:center;text-align:center;"
+            "font:18px system-ui,sans-serif}</style></head>"
+            f"<body><div>{body}</div></body></html>"))
 
-    async def proxy_http(self, request, s):
+    async def proxy_http(self, request, s, page_load=False):
         headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS
                    and k.lower() != self.cfg["header"].lower()}
         async with self.http.request(request.method, f"http://{s.address}:8080{request.rel_url}",
@@ -474,6 +535,9 @@ class Broker:
                                      allow_redirects=False) as r:
             resp = web.StreamResponse(status=r.status, headers={
                 k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS})
+            if page_load:
+                # A cached page would come back without starting a session.
+                resp.headers["Cache-Control"] = "no-store"
             await resp.prepare(request)
             async for chunk in r.content.iter_chunked(65536):
                 await resp.write(chunk)
@@ -488,6 +552,7 @@ class Broker:
                                          max_msg_size=0)
             await down.prepare(request)
             s.connections += 1
+            s.detached_since = s.closed_at = 0.0
             try:
                 async def pump(src, dst):
                     async for m in src:
@@ -504,6 +569,8 @@ class Broker:
             finally:
                 s.connections -= 1
                 s.last_seen = time.monotonic()
+                if s.connections == 0:
+                    s.detached_since = s.last_seen
                 await down.close()
             return down
 
@@ -538,6 +605,7 @@ async def main(path):
     cfg = load_config(path)
     broker = Broker(cfg)
     await broker.docker.ensure_network(cfg["network"])
+    await broker.load_branding()
     app = web.Application(client_max_size=64 * 1024 * 1024)
     app.router.add_route("*", "/{tail:.*}", broker.handle)
     runner = web.AppRunner(app)

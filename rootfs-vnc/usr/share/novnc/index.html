@@ -20,7 +20,7 @@
   See docs/frontends.md, "Installed as an app".
 -->
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #333; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--app-bg, #333); }
   /* remote: below the minimum screen size the page scrolls instead */
   body.remote { overflow: auto; }
   #vnc { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; display: block; }
@@ -67,9 +67,13 @@
             background: #8a5a00; color: #fff; font: 15px system-ui, sans-serif;
             box-shadow: 0 2px 8px rgba(0,0,0,.4); }
   #notice[hidden] { display: none; }
+  /* Opaque, in the app's colour (WEBAPP_BACKGROUND), like the broker's
+     signing-in page: nothing of the app shows through while it signs in or
+     after it closed. */
   #cover { position: fixed; inset: 0; z-index: 4; display: grid; place-items: center;
-           background: var(--cover-bg, rgba(32, 32, 32, .82)); color: #fff;
+           background: var(--app-bg, #333); color: #fff;
            font: 18px system-ui, sans-serif; text-align: center; }
+  #cover p { margin: 0; }
   #cover[hidden] { display: none; }
   #cover button { margin-top: 12px; font: inherit; padding: 8px 20px; border-radius: 6px;
                   border: 0; background: #2f6fd0; color: #fff; cursor: pointer; }
@@ -89,6 +93,12 @@
 <div id="cover" hidden><div><p id="cover-text"></p><button id="cover-button" type="button" hidden>Open again</button></div></div>
 <script>
 "use strict";
+// The app's colour from the last visit, until api/info says, so the page
+// doesn't flash grey after the broker's signing-in page.
+try {
+  const bg = localStorage.getItem("wine-webapp-background");
+  if (bg) document.documentElement.style.setProperty("--app-bg", bg);
+} catch (e) {}
 const frame = document.getElementById("vnc");
 const button = document.getElementById("win-button");
 const panel = document.getElementById("win-panel");
@@ -239,7 +249,7 @@ async function checkPrints() {
     // gateway restarting; try again next time
   }
 }
-setInterval(checkPrints, 3000);
+const printsTimer = setInterval(checkPrints, 3000);
 checkPrints();
 
 // Notices from the session broker (docs/broker.md), e.g. "this session will
@@ -270,7 +280,7 @@ async function checkNotice() {
     // gateway restarting; try again next time
   }
 }
-setInterval(checkNotice, 15000);
+const noticeTimer = setInterval(checkNotice, 15000);
 checkNotice();
 
 // The cover: while the session broker's login watcher signs the user in to
@@ -291,11 +301,18 @@ function hideCover() {
   cover.hidden = true;
   frame.inert = false;
 }
+// The session is over: stop everything that talks to it (noVNC would retry
+// for ever behind the cover) and leave only the cover and its button.
 function closed(why) {
+  if (ended) return;
   ended = true;
+  [printsTimer, noticeTimer, loginTimer].forEach(clearInterval);
+  frame.src = "about:blank";
+  for (const el of [document.getElementById("bar"), panel, printsPanel, toast, noticeBox]) el.hidden = true;
   const name = document.title || "The app";
   const text = { closed: `${name} was closed.`, idle: "This session was closed after a time without activity.",
-                 maintenance: "This session was closed for maintenance." }[why] || "This session was closed.";
+                 maintenance: "This session was closed for maintenance.",
+                 detached: "This session was closed after its window was closed." }[why] || "This session was closed.";
   showCover(text, true);
 }
 async function checkLogin() {
@@ -311,8 +328,19 @@ async function checkLogin() {
     // gateway restarting; try again next time
   }
 }
-setInterval(checkLogin, 1500);
+const loginTimer = setInterval(checkLogin, 1500);
 checkLogin();
+// Back in front (or brought back from the browser's back/forward cache):
+// check at once rather than at the next tick. A page restored from that
+// cache is an old one; load it afresh.
+addEventListener("pageshow", e => { if (e.persisted) location.reload(); });
+// Tell the session broker the page is closing (docs/broker.md, "Closed
+// windows"): if no page comes back soon, it closes the app. A reload comes
+// back at once; without the broker the request is simply refused.
+addEventListener("pagehide", () => { if (!ended) navigator.sendBeacon("_session/closing"); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !ended) { checkLogin(); checkNotice(); }
+});
 // Ask once, on the first click on the page's own controls (a user gesture).
 document.getElementById("bar").addEventListener("click", () => {
   if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
@@ -383,11 +411,31 @@ function fitWindowToScreen(info) {
 (async () => {
   let info = { resize: "scale" };
   try {
-    info = await (await fetch("api/info", { cache: "no-store" })).json();
+    const r = await fetch("api/info", { cache: "no-store" });
+    if (r.status === 410) {
+      // This page outlived its session (a browser that kept it despite
+      // no-store). Loading it again starts a new one; once only, in case
+      // something keeps answering 410.
+      let last = 0;
+      try { last = Number(sessionStorage.getItem("wine-webapp-reloaded")) || 0; } catch (e) {}
+      if (Date.now() - last > 30000) {
+        try { sessionStorage.setItem("wine-webapp-reloaded", String(Date.now())); } catch (e) {}
+        location.reload();
+      } else {
+        closed((await r.json().catch(() => ({}))).reason);
+      }
+      return;
+    }
+    info = await r.json();
     document.title = info.name;
+    if (info.background) {
+      document.documentElement.style.setProperty("--app-bg", info.background);
+      try { localStorage.setItem("wine-webapp-background", info.background); } catch (e) {}
+    }
   } catch (e) {
     // Without the gateway's API, connect scaled.
   }
+  if (ended) return;
   const remote = info.resize === "remote";
   if (remote) followWindow(info);
   frame.src = "vnc.html?autoconnect=1&resize=" + (remote ? "remote" : "scale") +

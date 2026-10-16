@@ -17,3 +17,6 @@ test-results/*.log
 # Build outputs
 dist/
 tools/*/*.exe
+
+# Python byte code (py_compile checks)
+__pycache__/

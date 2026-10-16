@@ -76,7 +76,7 @@ front: see `broker/Dockerfile`.
 When a container starts, the broker writes that user's credentials into it
 as a root-only file and starts `wine-webapp-login`, which fills the app's own
 login window through the app's login hook ([`app-contract.md`](app-contract.md),
-"Login"). Until it reports success the browser only sees "Signing you in":
+"Login"). Until it reports success the browser only sees "Signing in":
 the login is filled at the container's fixed screen size, before the browser
 can resize the screen or type into the form. A login that fails is not
 retried for a minute, so a wrong password can't trip an app that closes
@@ -87,7 +87,10 @@ in again as the session's user.
 While the app is signed in again inside a running session (after a crash,
 or after the wrong user was detected), the page covers the screen with
 "Signing in…" and the app can't be clicked or typed into, until the login
-watcher reports success.
+watcher reports success. The signing-in page and that cover look the same:
+the app's name (`WEBAPP_NAME`) on its colour (`WEBAPP_BACKGROUND`), read
+from the session image and `[session] env`, and opaque, so the login form
+being filled never shows.
 
 ## Closing the app
 
@@ -96,7 +99,31 @@ finds a fresh start screen. Behind the broker, set `WEBAPP_EXIT_ENDS_SESSION=1`
 in the app image instead: when the user closes the app, the session ends,
 the app gives up what it holds (licences, locks) at once, and the page says
 it was closed, with an "Open again" button that goes through the signing-in
-page like a first visit.
+page like a first visit. The page then stops talking to the session (noVNC
+included), so nothing of the old screen is left behind the message.
+
+Closing the window or tab works too: reopening it always starts from the
+signing-in page. Neither the broker nor the gateway lets the browser cache
+the page (`Cache-Control: no-store`), since a cached copy would come back
+without asking the broker and find its session gone; a page that was kept
+anyway (the back/forward cache) loads itself again.
+
+## Closed windows
+
+When the user closes the page (its tab or the installed app's window), it
+tells the broker on its way out (a beacon to `/_session/closing`, which the
+broker answers itself). If no page connects again within `detached_minutes`,
+the session is closed the way a user would close it, so the app gives up its
+licence and the next visit starts afresh; reopened sooner, the app is as it
+was left. A reload sends the beacon too but is back within a second.
+
+A page that goes away without saying so (a computer asleep, a network
+drop) is not counted as closed: the idle limits below apply, so someone
+interrupted for an hour during the working day still finds the app. So does
+a window left open but unattended.
+
+A page load while a session is being stopped waits on the signing-in page
+and then gets a new session, never the app that is quitting.
 
 ## Idle sessions
 
@@ -108,6 +135,7 @@ browser is still open. How long is too long depends on the time of day:
 [idle]
 default_minutes = 30          # outside the windows below
 warn_minutes = 10             # warn this long before closing
+detached_minutes = 10         # page closed by the user this long: close the session (0: never)
 [[idle.window]]
 days = "Mon-Fri"
 from = "06:00"
@@ -121,9 +149,9 @@ its container). `warn_minutes` before the limit, the page shows a notice
 with the closing time and, when the window isn't in front, a system
 notification (allowed by the user once). Any input clears it. At the
 limit the session is closed the way a user would close it (the app's quit
-hook) and the container removed. An open page then shows "This session was
-closed. Reload the page to continue."; its background requests don't start
-the session again.
+hook) and the container removed. An open page then says the session was
+closed after a time without activity, with "Open again"; its background
+requests don't start the session again.
 
 ## Maintenance
 
