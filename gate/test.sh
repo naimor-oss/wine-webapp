@@ -56,6 +56,7 @@ docker run -d --name "$p-kdc" --network "$net" --network-alias kdc.example.test 
     openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=$gate \
       -addext subjectAltName=DNS:$gate -keyout /files/tls.key -out /files/tls.crt 2>/dev/null
     chmod 644 /files/tls.key
+    chmod 600 /files/krb5.conf   # as a real deployment keeps it: root only
     touch /files/ready
     exec krb5kdc -n" >/dev/null
 

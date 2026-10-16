@@ -38,7 +38,8 @@ install -m 0400 -o www-data -g www-data "$conf/http.keytab" "$run/http.keytab"
 rm -f "$run/session.key"
 
 if [ -r "$conf/krb5.conf" ]; then
-  cp "$conf/krb5.conf" /etc/krb5.conf
+  # The workers read it too, whatever the mounted copy's mode.
+  install -m 0644 "$conf/krb5.conf" /etc/krb5.conf
 else
   {
     printf '[libdefaults]\n  default_realm = %s\n' "$GATE_REALM"
