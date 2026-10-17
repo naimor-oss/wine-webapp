@@ -1,0 +1,120 @@
+# Builds the base and vnc images, smoke-tests the notepad example on them,
+# and publishes to ghcr.io/naimor-oss/wine-webapp (docs/releases.md).
+# Two tracks per run:
+#   branch   pull request: build + smoke test, nothing pushed
+#            main (push, schedule, manual): :base, :vnc and :<target>-<date>-<sha>
+#   release  tag vX.Y.Z pushed, and every schedule/manual run for the newest
+#            vX.Y.Z tag: :<target>-X.Y.Z and :<target>-X.Y (moving, rebuilt
+#            weekly) and :<target>-X.Y.Z-<date> (fixed)
+# Scheduled runs build without cache, so Debian security updates get in.
+name: image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/naimor-oss/wine-webapp
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        track: [branch, release]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Pick what to build
+        id: v
+        env:
+          TRACK: ${{ matrix.track }}
+        run: |
+          skip=false ref=""
+          case "$TRACK:$GITHUB_EVENT_NAME:$GITHUB_REF" in
+            branch:push:refs/tags/*)              skip=true ;;
+            branch:*)                             ;;
+            release:push:refs/tags/v*)            ref=${GITHUB_REF#refs/tags/} ;;
+            release:schedule:*|release:workflow_dispatch:*)
+              ref=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n 1)
+              [ -n "$ref" ] || skip=true ;;
+            release:*)                            skip=true ;;
+          esac
+          echo "skip=$skip" >>"$GITHUB_OUTPUT"
+          [ "$skip" = true ] && { echo "nothing to build on the $TRACK track"; exit 0; }
+          [ -n "$ref" ] && git checkout -q "$ref"
+          sha=$(git rev-parse --short=12 HEAD)
+          today=$(date -u +%Y%m%d)
+          if [ "$TRACK" = release ]; then
+            version=${ref#v}
+            tags="X-$version X-${version%.*} X-$version-$today"
+          else
+            version=0.0.0-$sha
+            tags="X-$today-$sha"
+            [ "$GITHUB_REF" = refs/heads/main ] && tags="X $tags"
+          fi
+          push=true
+          [ "$GITHUB_EVENT_NAME" = pull_request ] && push=false
+          cache=true
+          [ "$GITHUB_EVENT_NAME" = schedule ] && cache=false
+          echo "Building $TRACK ${ref:-$GITHUB_REF} ($sha) as $version; tags: $tags; push=$push cache=$cache"
+          {
+            echo "version=$version"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "tags=$tags"
+            echo "push=$push"
+            echo "cache=$cache"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.v.outputs.skip != 'true'
+
+      - name: Build base and vnc
+        if: steps.v.outputs.skip != 'true'
+        run: |
+          cache="--cache-from type=gha --cache-to type=gha,mode=max"
+          [ "${{ steps.v.outputs.cache }}" = true ] || cache="--no-cache --cache-to type=gha,mode=max"
+          for target in base vnc; do
+            # shellcheck disable=SC2086
+            docker buildx build --load --target "$target" $cache \
+              --build-arg VERSION=${{ steps.v.outputs.version }} \
+              --build-arg REVISION=${{ steps.v.outputs.revision }} \
+              -t "wine-webapp:$target" .
+          done
+
+      - name: Smoke test
+        if: steps.v.outputs.skip != 'true'
+        run: |
+          docker build -t wine-webapp-example-notepad examples/notepad
+          tests/smoke.sh wine-webapp-example-notepad Notepad
+
+      - name: Log in to GHCR
+        if: steps.v.outputs.skip != 'true' && steps.v.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        if: steps.v.outputs.skip != 'true' && steps.v.outputs.push == 'true'
+        run: |
+          for target in base vnc; do
+            for t in ${{ steps.v.outputs.tags }}; do
+              tag=$(printf '%s' "$t" | sed "s/^X/$target/")
+              docker tag "wine-webapp:$target" "$IMAGE:$tag"
+              docker push "$IMAGE:$tag"
+            done
+          done
