@@ -1,0 +1,26 @@
+# wine-webapp-broker configuration (docs/broker.md). Example values.
+[broker]
+listen = "0.0.0.0:8000"
+identity_header = "X-Remote-User"
+trusted_proxies = ["172.16.0.0/12"]      # the sign-in gate's address(es)
+admins = ["admin@EXAMPLE.COM"]
+max_sessions = 10
+network = "wine-webapp-sessions"
+users_file = "/etc/wine-webapp-broker/users.toml"   # root-only: holds credentials
+
+[session]
+image = "example-app:1.0"                # FROM wine-webapp:vnc
+name_prefix = "app"                      # containers and host names app-<user>
+volumes = ["example-data:/data"]
+env = { WEBAPP_SCREEN = "1600x900" }
+memory_mb = 1536
+
+[idle]
+default_minutes = 30
+warn_minutes = 10
+detached_minutes = 10                    # page closed by the user this long: end the session
+[[idle.window]]
+days = "Mon-Fri"
+from = "06:00"
+to = "18:30"
+minutes = 120

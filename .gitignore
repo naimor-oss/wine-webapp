@@ -18,5 +18,7 @@ test-results/*.log
 dist/
 tools/*/*.exe
 
+# Python byte code (py_compile checks)
+__pycache__/
 # test programs are built locally (tools/*/README.md)
 tools/**/*.exe

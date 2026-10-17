@@ -1,0 +1,626 @@
+#!/usr/bin/python3
+"""Session broker: one app container per signed-in user, behind one address.
+
+    wine-webapp-broker CONFIG.toml
+
+A sign-in gate in front (docs/broker.md) proves who the user is and passes
+the name in a header. For each request the broker:
+
+1. trusts that header only from the gate's addresses (`trusted_proxies`);
+2. looks the name up in the users file; anyone not in it is refused;
+3. starts that user's container if it isn't running (never for anyone who
+   hasn't asked), with a stable hostname, and signs the user in to the app
+   (wine-webapp-login);
+4. keeps the browser on a "signing in" page until the app's login is done,
+   so the login is filled at the container's fixed screen size, before the
+   browser can resize the screen or type into the form;
+5. then passes requests, WebSocket included, to that container's port 8080.
+
+It also caps the number of sessions, ends idle sessions ([idle]: no key or
+mouse input for a time that depends on the time of day, with a warning on the
+page first, whether or not the browser is still open), ends sessions whose
+page was closed a while ago ([idle] detached_minutes), and has a
+maintenance mode that ends every session and refuses new ones, for work that
+needs everyone out. Admins (`admins`) see /_broker/status and switch
+maintenance with POST /_broker/maintenance {"on": true|false}.
+
+Only the broker talks to Docker; its socket is root on the host.
+"""
+import asyncio
+import html
+import io
+import ipaddress
+import json
+import logging
+import re
+import sys
+import tarfile
+import time
+import tomllib
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+
+import aiohttp
+from aiohttp import web
+
+log = logging.getLogger("broker")
+LABEL = "io.github.naimor-oss.wine-webapp.broker"
+HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+               "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"}
+
+
+class ConfigError(Exception):
+    pass
+
+
+@dataclass
+class User:
+    identity: str           # as the gate names them, e.g. alice@EXAMPLE.COM
+    app_user: str           # the app's own user name
+    password: str
+    expect_title: str = ""  # text the app's main window shows for this user
+    slug: str = ""          # container/hostname part, from app_user
+
+
+@dataclass
+class Session:
+    user: User
+    container: str
+    address: str = ""
+    connections: int = 0
+    last_seen: float = field(default_factory=time.monotonic)
+    state: str = "stopped"  # stopped, starting, ready, stopping, failed
+    reason: str = ""
+    failed_at: float = 0.0
+    warned: bool = False
+    detached_since: float = 0.0  # when the last browser connection closed
+    closed_at: float = 0.0       # when the page said it was being closed
+    ended: str = ""         # why the last session ended: closed, idle, maintenance, ...
+    task: object = None
+
+
+def slug_of(app_user):
+    s = re.sub(r"[^a-z0-9]+", "-", app_user.lower()).strip("-")
+    if not s:
+        raise ConfigError(f"app_user {app_user!r} gives an empty host name")
+    return s
+
+
+def load_users(path, prefix):
+    """The users file: one table per identity. Host names are checked the way
+    Windows sees them under Wine: upper-cased and cut to 15 characters, so two
+    users must differ within that."""
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    users, names = {}, {}
+    for identity, u in data.items():
+        if not isinstance(u, dict) or "app_user" not in u or "password" not in u:
+            raise ConfigError(f"{path}: [{identity!r}] needs app_user and password")
+        user = User(identity=identity, app_user=str(u["app_user"]), password=str(u["password"]),
+                    expect_title=str(u.get("expect_title", "")))
+        user.slug = slug_of(user.app_user)
+        host = f"{prefix}-{user.slug}"
+        if not HOSTNAME_RE.match(host) or len(host) > 63:
+            raise ConfigError(f"host name {host!r} for {identity!r} is not valid")
+        windows_name = host[:15].upper()
+        if windows_name in names:
+            raise ConfigError(f"{identity!r} and {names[windows_name]!r} would share the "
+                              f"computer name {windows_name} (first 15 characters)")
+        names[windows_name] = identity
+        users[identity.lower()] = user
+    return users
+
+
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def parse_days(spec):
+    """'Mon-Fri', 'Sat,Sun', 'Mon-Sun' -> set of weekday numbers (Monday 0)."""
+    out = set()
+    for part in spec.lower().replace(" ", "").split(","):
+        a, _, b = part.partition("-")
+        if a not in DAYS or (b and b not in DAYS):
+            raise ConfigError(f"[idle] days {spec!r}: use Mon..Sun, ranges and commas")
+        i, j = DAYS.index(a), DAYS.index(b or a)
+        out.update(range(i, j + 1) if i <= j else [*range(i, 7), *range(0, j + 1)])
+    return out
+
+
+def parse_hhmm(t):
+    m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", t)
+    if not m:
+        raise ConfigError(f"[idle] time {t!r}: use HH:MM")
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def load_idle(c):
+    """[idle]: minutes without input before a session ends, by time of day.
+    The first matching [[idle.window]] wins; otherwise default_minutes."""
+    idle = {"default": float(c.get("default_minutes", 30)),
+            "warn": float(c.get("warn_minutes", 10)),
+            "detached": float(c.get("detached_minutes", 10)), "windows": []}
+    if idle["detached"] < 0:
+        raise ConfigError("[idle] detached_minutes: 0 (never) or more")
+    for w in c.get("window", []):
+        start, end = parse_hhmm(w["from"]), parse_hhmm(w["to"])
+        idle["windows"].append((parse_days(w.get("days", "Mon-Sun")), start, end,
+                                float(w["minutes"])))
+    if idle["warn"] >= min([idle["default"]] + [w[3] for w in idle["windows"]]):
+        raise ConfigError("[idle] warn_minutes must be shorter than every idle limit")
+    return idle
+
+
+def idle_limit(idle, when):
+    """Idle limit in minutes for a session idle since `when` (local time).
+    Judged at the moment input stopped: someone interrupted during the
+    working day keeps the day's generous limit even if it runs past closing."""
+    minute = when.hour * 60 + when.minute
+    for days, start, end, minutes in idle["windows"]:
+        if when.weekday() in days and (start <= minute < end if start <= end
+                                       else minute >= start or minute < end):
+            return minutes
+    return idle["default"]
+
+
+def detached_too_long(s, idle, now):
+    """True when the user closed the session's page (it said so, on its way
+    out) and none has connected for detached_minutes (0: never). A page
+    that just went away (a computer asleep, a network drop) doesn't count:
+    the idle limits deal with those."""
+    return bool(idle["detached"] and s.closed_at and s.connections == 0
+                and now - max(s.closed_at, s.detached_since) >= idle["detached"] * 60)
+
+
+def load_config(path):
+    with open(path, "rb") as f:
+        c = tomllib.load(f)
+    b, s = c.get("broker", {}), c.get("session", {})
+    if "image" not in s:
+        raise ConfigError("[session] image is required")
+    cfg = {
+        "listen": b.get("listen", "0.0.0.0:8000"),
+        "header": b.get("identity_header", "X-Remote-User"),
+        "trusted": [ipaddress.ip_network(n) for n in b.get("trusted_proxies", ["127.0.0.1/32"])],
+        "admins": {a.lower() for a in b.get("admins", [])},
+        "max_sessions": int(b.get("max_sessions", 10)),
+        "docker": b.get("docker_socket", "/var/run/docker.sock"),
+        "network": b.get("network", "wine-webapp-sessions"),
+        "users_file": b.get("users_file", "/etc/wine-webapp-broker/users.toml"),
+        "image": s["image"],
+        "prefix": s.get("name_prefix", "app"),
+        "env": {str(k): str(v) for k, v in s.get("env", {}).items()},
+        "volumes": list(s.get("volumes", [])),
+        "memory_mb": int(s.get("memory_mb", 0)),
+    }
+    cfg["idle"] = load_idle(c.get("idle", {}))
+    if not re.match(r"^[a-z][a-z0-9-]{0,8}$", cfg["prefix"]):
+        raise ConfigError("[session] name_prefix: lower-case letters, digits, '-', at most 9")
+    cfg["users"] = load_users(cfg["users_file"], cfg["prefix"])
+    return cfg
+
+
+class Docker:
+    """The few Docker Engine API calls the broker needs, over its socket."""
+
+    def __init__(self, socket):
+        self.http = aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=socket),
+                                          base_url="http://docker")
+
+    async def call(self, method, path, ok=(200, 201, 204, 304), **kw):
+        async with self.http.request(method, path, **kw) as r:
+            body = await r.read()
+            if r.status not in ok:
+                raise RuntimeError(f"docker {method} {path}: {r.status} {body[:300]!r}")
+            return json.loads(body) if body and r.content_type == "application/json" else body
+
+    async def inspect(self, name):
+        try:
+            return await self.call("GET", f"/containers/{name}/json")
+        except RuntimeError as e:
+            if ": 404 " in str(e):
+                return None
+            raise
+
+    async def ensure_network(self, name):
+        nets = await self.call("GET", "/networks", params={"filters": json.dumps({"name": [name]})})
+        if not any(n["Name"] == name for n in nets):
+            await self.call("POST", "/networks/create", json={"Name": name, "Internal": False,
+                                                                "Labels": {LABEL: "1"}})
+
+    async def put_file(self, name, path, data, mode=0o400):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as t:
+            info = tarfile.TarInfo(path.rsplit("/", 1)[1])
+            info.size, info.mode, info.uid, info.gid = len(data), mode, 0, 0
+            t.addfile(info, io.BytesIO(data))
+        await self.call("PUT", f"/containers/{name}/archive", params={"path": path.rsplit("/", 1)[0]},
+                        data=buf.getvalue(), headers={"Content-Type": "application/x-tar"})
+
+    async def exec(self, name, cmd, detach=False, user="root"):
+        e = await self.call("POST", f"/containers/{name}/exec",
+                            json={"Cmd": cmd, "User": user, "AttachStdout": not detach,
+                                  "AttachStderr": not detach})
+        out = await self.call("POST", f"/exec/{e['Id']}/start", json={"Detach": detach})
+        if detach:
+            return 0, b""
+        for _ in range(600):
+            st = await self.call("GET", f"/exec/{e['Id']}/json")
+            if not st["Running"]:
+                return st["ExitCode"], out
+            await asyncio.sleep(0.5)
+        return -1, out
+
+
+class Broker:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.docker = Docker(cfg["docker"])
+        self.sessions = {}          # identity (lower) -> Session
+        self.maintenance = False
+        self.http = aiohttp.ClientSession(auto_decompress=False)
+        # The app's name and colour, for the signing-in page; read from the
+        # image (load_branding), [session] env wins.
+        self.name, self.background = "Application", "#333333"
+
+    async def load_branding(self):
+        env = {}
+        try:
+            image = await self.docker.call("GET", f"/images/{self.cfg['image']}/json")
+            env = dict(e.split("=", 1) for e in image["Config"].get("Env") or [] if "=" in e)
+        except RuntimeError as e:
+            log.warning("reading %s: %s", self.cfg["image"], e)
+        env.update(self.cfg["env"])
+        self.name = env.get("WEBAPP_NAME") or self.name
+        if re.match(r"^#[0-9a-fA-F]{6}$", env.get("WEBAPP_BACKGROUND", "")):
+            self.background = env["WEBAPP_BACKGROUND"]
+
+    # --- who is asking
+    def identity(self, request):
+        peer = ipaddress.ip_address(request.remote or "0.0.0.0")
+        if not any(peer in n for n in self.cfg["trusted"]):
+            raise web.HTTPForbidden(text="Not from the sign-in gate.\n")
+        name = request.headers.get(self.cfg["header"], "").strip()
+        if not name:
+            raise web.HTTPUnauthorized(text="Not signed in.\n")
+        return name
+
+    # --- sessions
+    def container_name(self, user):
+        return f"{self.cfg['prefix']}-{user.slug}"
+
+    async def running(self):
+        cs = await self.docker.call("GET", "/containers/json",
+                                    params={"filters": json.dumps({"label": [LABEL]})})
+        return {c["Names"][0].lstrip("/"): c for c in cs}
+
+    async def start(self, user):
+        name = self.container_name(user)
+        c = await self.docker.inspect(name)
+        if c is None:
+            host = {"NetworkMode": self.cfg["network"], "Binds": self.cfg["volumes"],
+                    "AutoRemove": True}
+            if self.cfg["memory_mb"]:
+                host["Memory"] = self.cfg["memory_mb"] * 1024 * 1024
+            env = [f"{k}={v}" for k, v in self.cfg["env"].items()] + [f"WEBAPP_USER={user.app_user}"]
+            await self.docker.call("POST", "/containers/create", params={"name": name},
+                                   json={"Image": self.cfg["image"], "Hostname": name, "Env": env,
+                                         "Labels": {LABEL: user.identity}, "HostConfig": host})
+            log.info("created %s for %s", name, user.identity)
+        was_running = bool((c or {}).get("State", {}).get("Running"))
+        if not was_running:
+            await self.docker.call("POST", f"/containers/{name}/start")
+        c = await self.docker.inspect(name)
+        address = c["NetworkSettings"]["Networks"][self.cfg["network"]]["IPAddress"]
+        # Wait for the gateway, then hand the login to the container.
+        for _ in range(240):
+            try:
+                async with self.http.get(f"http://{address}:8080/api/info",
+                                         timeout=aiohttp.ClientTimeout(total=2)) as r:
+                    if r.status == 200:
+                        break
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+            await asyncio.sleep(0.5)
+        else:
+            raise web.HTTPServiceUnavailable(text="The session did not start.\n")
+        # A container that was already running (the broker restarted) has
+        # its login watcher; only a fresh one gets the credentials.
+        if not was_running:
+            cred = json.dumps({"user": user.app_user, "password": user.password,
+                               "expect_title": user.expect_title}).encode()
+            await self.docker.put_file(name, "/run/wine-webapp/login.json", cred)
+            await self.docker.exec(name, ["/usr/local/bin/wine-webapp-login"], detach=True)
+        return name, address
+
+    async def login_status(self, name):
+        code, out = await self.docker.exec(name, ["cat", "/run/wine-webapp/login.status"])
+        # The exec output is Docker's multiplexed stream: skip the 8-byte frame headers.
+        text, i = b"", 0
+        while i + 8 <= len(out):
+            n = int.from_bytes(out[i + 4:i + 8], "big")
+            text += out[i + 8:i + 8 + n]
+            i += 8 + n
+        return text.decode(errors="replace").strip() if code == 0 else ""
+
+    async def bring_up(self, s):
+        """Start (or adopt) the user's container and wait for the login."""
+        try:
+            s.container, s.address = await self.start(s.user)
+            # An adopted container may carry a notice from before a restart.
+            await self.set_notice(s.container, None)
+            for _ in range(120):
+                st = await self.login_status(s.container)
+                word, _, reason = st.partition(" ")
+                if word == "ok":
+                    s.state = "ready"
+                    s.detached_since = time.monotonic()  # no page attached yet
+                    log.info("%s signed in", s.container)
+                    return
+                if word in ("failed", "mismatch"):
+                    log.warning("%s: login %s", s.container, st)
+                    await self.stop(s, "login failed", graceful=False)
+                    s.state, s.reason, s.failed_at = "failed", reason or word, time.monotonic()
+                    return
+                await asyncio.sleep(1)
+            await self.stop(s, "login timed out", graceful=False)
+            s.state, s.reason, s.failed_at = "failed", "the login did not finish", time.monotonic()
+        except Exception:  # the user sees the reason; details are in the log
+            log.exception("starting %s", s.container)
+            s.state, s.reason, s.failed_at = "failed", "the session did not start", time.monotonic()
+
+    async def session_for(self, user, may_start=True):
+        key = user.identity.lower()
+        s = self.sessions.get(key)
+        if s is None:
+            s = self.sessions[key] = Session(user=user, container=self.container_name(user))
+        if s.state == "ready":
+            c = await self.docker.inspect(s.container)
+            # Several requests can get here at once; the first one ends it.
+            if s.state == "ready" and not (c or {}).get("State", {}).get("Running"):
+                # Gone without the broker stopping it: the user closed the
+                # app (WEBAPP_EXIT_ENDS_SESSION), or it crashed.
+                s.state, s.address, s.ended = "stopped", "", "closed"
+                log.info("%s ended: the app was closed", s.container)
+        # One login attempt per minute at most: a bad mapping must not hammer
+        # the app (some close after a few failed logins).
+        if s.state == "failed" and time.monotonic() - s.failed_at > 60:
+            s.state = "stopped"
+        if s.state == "stopped" and not may_start:
+            # A container still running after a broker restart is adopted;
+            # that doesn't start anything.
+            c = await self.docker.inspect(s.container)
+            may_start = bool((c or {}).get("State", {}).get("Running"))
+        if s.state == "stopped" and not may_start:
+            # The page's own background requests (notices, prints, the VNC
+            # connection) must not bring a closed session back: only the
+            # user opening or reloading the page does.
+            raise web.HTTPGone(text=json.dumps({"closed": True, "reason": s.ended or "closed"}),
+                               content_type="application/json",
+                               headers={"Cache-Control": "no-store"})
+        if s.state == "stopped":
+            if self.maintenance:
+                raise web.HTTPServiceUnavailable(text="Under maintenance; try again later.\n")
+            live = set(await self.running()) - {s.container}
+            if len(live) >= self.cfg["max_sessions"]:
+                raise web.HTTPServiceUnavailable(
+                    text=f"All {self.cfg['max_sessions']} sessions are in use; try again later.\n")
+            s.state, s.reason = "starting", ""
+            s.task = asyncio.create_task(self.bring_up(s))
+        s.last_seen = time.monotonic()
+        return s
+
+    async def stop(self, s, reason, graceful=True):
+        """End a session: the app closes itself first (wine-webapp-quit), so
+        nothing is cut off mid-write, unless nobody is signed in to it."""
+        log.info("stopping %s (%s)", s.container, reason)
+        # Not ready any more: a page load meanwhile waits, then starts anew,
+        # instead of reaching the app while it quits.
+        s.state = "stopping"
+        s.ended = reason.split()[0]
+        try:
+            if graceful:
+                await self.docker.exec(s.container, ["/usr/local/bin/wine-webapp-quit"])
+            await self.docker.call("POST", f"/containers/{s.container}/stop", params={"t": "30"},
+                                   ok=(204, 304, 404))
+        except RuntimeError as e:
+            log.warning("stopping %s: %s", s.container, e)
+        s.address, s.state, s.warned, s.closed_at = "", "stopped", False, 0.0
+
+    async def idle_ms(self, name):
+        code, out = await self.docker.exec(name, ["sh", "-c", "DISPLAY=:1 xprintidle"])
+        digits = re.findall(rb"\d+", out[8:] if len(out) > 8 else out)
+        return int(digits[0]) if code == 0 and digits else None
+
+    async def set_notice(self, name, notice):
+        if notice is None:
+            await self.docker.exec(name, ["rm", "-f", "/run/wine-webapp/notice.json"])
+        else:
+            await self.docker.put_file(name, "/run/wine-webapp/notice.json",
+                                       json.dumps(notice).encode(), mode=0o444)
+
+    async def reaper(self):
+        """Every minute: end sessions whose page has been closed for
+        detached_minutes, warn sessions nearing their idle limit, end the
+        ones past it. Idle means no key or mouse input in the session
+        (xprintidle), so an open but unattended browser counts as idle."""
+        idle = self.cfg["idle"]
+        while True:
+            await asyncio.sleep(60)
+            for s in list(self.sessions.values()):
+                if s.state != "ready":
+                    continue
+                try:
+                    # The user closed the page (tab, window) and didn't come
+                    # back: close the app as if they had, so it gives up its
+                    # licence and the next visit starts afresh. A reload
+                    # reconnects well within this.
+                    now = time.monotonic()
+                    if detached_too_long(s, idle, now):
+                        await self.stop(s, f"detached {int((now - s.detached_since) // 60)} min")
+                        continue
+                    ms = await self.idle_ms(s.container)
+                    if ms is None:
+                        continue
+                    since = datetime.now() - timedelta(milliseconds=ms)
+                    limit = idle_limit(idle, since) * 60
+                    left = limit - ms / 1000
+                    if left <= 0:
+                        await self.stop(s, f"idle {ms // 60000} min")
+                    elif left <= idle["warn"] * 60:
+                        deadline = datetime.now() + timedelta(seconds=left)
+                        await self.set_notice(s.container, {
+                            "kind": "idle", "deadline": deadline.isoformat(timespec="minutes"),
+                            "message": f"No activity for a while. This session will close at "
+                                       f"{deadline:%H:%M} unless you use it."})
+                        s.warned = True
+                    elif s.warned:
+                        await self.set_notice(s.container, None)
+                        s.warned = False
+                except RuntimeError as e:
+                    log.warning("idle check of %s: %s", s.container, e)
+
+    # --- HTTP
+    async def handle(self, request):
+        name = self.identity(request)
+        if request.path.startswith("/_broker/"):
+            return await self.admin(request, name)
+        user = self.cfg["users"].get(name.lower())
+        if user is None:
+            log.info("refused %s: not in the users file", name)
+            raise web.HTTPForbidden(text=f"{name} has no access to this application.\n")
+        if request.path == "/_session/closing":
+            # The page's beacon as its tab or window closes (index.html).
+            s = self.sessions.get(user.identity.lower())
+            if s is not None and request.method == "POST":
+                s.closed_at = time.monotonic()
+            return web.Response(status=204)
+        page_load = request.method == "GET" and request.path == "/" and not request.headers.get("Upgrade")
+        s = await self.session_for(user, may_start=page_load)
+        if s.state != "ready":
+            return self.waiting_page(s, request)
+        if request.headers.get("Upgrade", "").lower() == "websocket":
+            return await self.proxy_ws(request, s)
+        return await self.proxy_http(request, s, page_load)
+
+    def waiting_page(self, s, request):
+        """The page while the session starts: the app's name on its
+        background colour, the same as the app page's own cover (index.html),
+        so the hand-over doesn't flash. Never cached: reopening the window
+        must reach the broker, not show an old page."""
+        if s.state == "failed":
+            body = (f"<p>Could not sign you in: {html.escape(s.reason)}.</p>"
+                    "<p>Try again in a minute, or ask your administrator.</p>")
+            status, refresh = 503, ""
+        else:
+            body, status = "<p>Signing in&hellip;</p>", 200
+            refresh = '<meta http-equiv="refresh" content="2">'
+        if request.path != "/" or request.headers.get("Upgrade"):
+            raise web.HTTPServiceUnavailable(text=f"Session {s.state}.\n")
+        name = html.escape(self.name)
+        return web.Response(status=status, content_type="text/html",
+                            headers={"Cache-Control": "no-store"}, text=(
+            f"<!doctype html><html><head><meta charset=utf-8>{refresh}<title>{name}</title>"
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f"<style>html,body{{height:100%;margin:0;background:{self.background};color:#fff}}"
+            "body{display:grid;place-items:center;text-align:center;"
+            "font:18px system-ui,sans-serif}</style></head>"
+            f"<body><div>{body}</div></body></html>"))
+
+    async def proxy_http(self, request, s, page_load=False):
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP_HEADERS
+                   and k.lower() != self.cfg["header"].lower()}
+        async with self.http.request(request.method, f"http://{s.address}:8080{request.rel_url}",
+                                     headers=headers, data=await request.read(),
+                                     allow_redirects=False) as r:
+            resp = web.StreamResponse(status=r.status, headers={
+                k: v for k, v in r.headers.items() if k.lower() not in HOP_HEADERS})
+            if page_load:
+                # A cached page would come back without starting a session.
+                resp.headers["Cache-Control"] = "no-store"
+            await resp.prepare(request)
+            async for chunk in r.content.iter_chunked(65536):
+                await resp.write(chunk)
+            await resp.write_eof()
+            return resp
+
+    async def proxy_ws(self, request, s):
+        protocols = [p.strip() for p in request.headers.get("Sec-WebSocket-Protocol", "").split(",") if p.strip()]
+        async with self.http.ws_connect(f"ws://{s.address}:8080{request.rel_url}",
+                                        protocols=protocols, max_msg_size=0) as up:
+            down = web.WebSocketResponse(protocols=[up.protocol] if up.protocol else (),
+                                         max_msg_size=0)
+            await down.prepare(request)
+            s.connections += 1
+            s.detached_since = s.closed_at = 0.0
+            try:
+                async def pump(src, dst):
+                    async for m in src:
+                        if m.type == aiohttp.WSMsgType.BINARY:
+                            await dst.send_bytes(m.data)
+                        elif m.type == aiohttp.WSMsgType.TEXT:
+                            await dst.send_str(m.data)
+                        else:
+                            break
+                        s.last_seen = time.monotonic()
+                await asyncio.wait([asyncio.create_task(pump(up, down)),
+                                    asyncio.create_task(pump(down, up))],
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                s.connections -= 1
+                s.last_seen = time.monotonic()
+                if s.connections == 0:
+                    s.detached_since = s.last_seen
+                await down.close()
+            return down
+
+    async def admin(self, request, name):
+        if name.lower() not in self.cfg["admins"]:
+            raise web.HTTPForbidden(text="Admins only.\n")
+        if request.path == "/_broker/status":
+            live = await self.running()
+            return web.json_response({
+                "maintenance": self.maintenance,
+                "max_sessions": self.cfg["max_sessions"],
+                "sessions": [{"identity": c["Labels"].get(LABEL), "container": n,
+                              "state": c["State"],
+                              "connections": self.sessions.get(c["Labels"].get(LABEL, "").lower(),
+                                                               Session(None, n)).connections}
+                             for n, c in sorted(live.items())]})
+        if request.path == "/_broker/maintenance" and request.method == "POST":
+            on = bool((await request.json()).get("on"))
+            self.maintenance = on
+            log.info("maintenance %s by %s", "on" if on else "off", name)
+            if on:
+                live = await self.running()
+                await asyncio.gather(*(self.stop(self.sessions.get(c["Labels"].get(LABEL, "").lower())
+                                                 or Session(None, n), "maintenance")
+                                       for n, c in live.items()))
+            return web.json_response({"maintenance": self.maintenance})
+        raise web.HTTPNotFound()
+
+
+async def main(path):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    cfg = load_config(path)
+    broker = Broker(cfg)
+    await broker.docker.ensure_network(cfg["network"])
+    await broker.load_branding()
+    app = web.Application(client_max_size=64 * 1024 * 1024)
+    app.router.add_route("*", "/{tail:.*}", broker.handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    host, port = cfg["listen"].rsplit(":", 1)
+    await web.TCPSite(runner, host, int(port)).start()
+    log.info("listening on %s, %d users, at most %d sessions", cfg["listen"],
+             len(cfg["users"]), cfg["max_sessions"])
+    await broker.reaper()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: wine-webapp-broker CONFIG.toml")
+    try:
+        asyncio.run(main(sys.argv[1]))
+    except ConfigError as e:
+        sys.exit(f"wine-webapp-broker: {e}")

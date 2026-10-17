@@ -46,8 +46,11 @@ done
 
 # Start-up screen: the X root shows whenever the Wine desktop is gone, that is
 # while the app is starting or restarting after the user quit. Without this it
-# is black. See docs/app-contract.md, "Start-up screen".
-if [ -f /etc/wine-webapp/splash.png ]; then
+# is black. See docs/app-contract.md, "Start-up screen". Behind the session
+# broker (WEBAPP_EXIT_ENDS_SESSION=1) the browser sees neither: the broker's
+# signing-in page covers the start, and quitting ends the session, where a
+# "starting" splash would be wrong; the colour alone is shown.
+if [ -f /etc/wine-webapp/splash.png ] && [ "${WEBAPP_EXIT_ENDS_SESSION:-0}" != 1 ]; then
   runuser -u webapp -- hsetroot -solid "$WEBAPP_BACKGROUND" -center /etc/wine-webapp/splash.png
 else
   runuser -u webapp -- hsetroot -solid "$WEBAPP_BACKGROUND"
@@ -61,6 +64,8 @@ rm -f /run/cups/cupsd.pid /run/cups/cups.sock
 # CUPS runs print steps with a clean environment; they read the container's
 # WEBAPP_* settings from here (wine-webapp-print-hooks).
 mkdir -p /run/wine-webapp
+# Markers between the login watcher (root) and the supervisor (webapp).
+install -d -o webapp -g webapp /run/wine-webapp/app
 env | grep '^WEBAPP_' | sed "s/'/'\\\\''/g; s/=/='/; s/\$/'/; s/^/export /" > /run/wine-webapp/env
 chmod 644 /run/wine-webapp/env
 cupsd

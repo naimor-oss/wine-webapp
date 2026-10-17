@@ -1,0 +1,122 @@
+#!/usr/bin/python3
+"""Sign the session's user in to the app, and keep it that way.
+
+    wine-webapp-login            run as root, normally started by the broker
+
+The broker writes /run/wine-webapp/login.json (root only, mode 0400):
+    {"user": "...", "password": "...", "expect_title": "..."}
+This reads it once and deletes it, so neither the app nor the browser user
+(through Wine's Z: drive) can read it later. Then, every two seconds:
+
+- When a window titled WEBAPP_LOGIN_WINDOW (a regular expression) appears,
+  run the app's /etc/wine-webapp/login once for it, as root, with
+  LOGIN_WINDOW (window id), LOGIN_USER and LOGIN_PASSWORD in its environment.
+  One attempt per appearance: a login that fails is not retried, since apps
+  often close after a few failures.
+- When a window titled WEBAPP_MAIN_WINDOW appears and its title doesn't
+  contain expect_title, someone signed in as another user: the app is
+  stopped, the supervisor starts it again, and the login is filled anew.
+
+The state goes to /run/wine-webapp/login.status (one word and a reason;
+root only): waiting, filling, ok, failed, mismatch; the word alone also to
+login.state, readable by all, for the page's "Signing in" overlay.
+docs/app-contract.md, "Login".
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+STATE_DIR = "/run/wine-webapp"
+CREDENTIALS = os.path.join(STATE_DIR, "login.json")
+STATUS = os.path.join(STATE_DIR, "login.status")
+PUBLIC = os.path.join(STATE_DIR, "login.state")    # the word only, for the page
+RESTART = os.path.join(STATE_DIR, "app", "restart")
+SCRIPT = "/etc/wine-webapp/login"
+ENV = dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":1"))
+
+
+def status(word, reason=""):
+    tmp = STATUS + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"{word} {reason}".strip() + "\n")
+    os.replace(tmp, STATUS)
+    tmp = PUBLIC + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(word + "\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, PUBLIC)
+    print(f"wine-webapp-login: {word} {reason}".strip(), file=sys.stderr, flush=True)
+
+
+def windows():
+    """(id, title) of every top-level window on the display."""
+    r = subprocess.run(["xdotool", "search", "--name", "."], env=ENV,
+                       capture_output=True, text=True)
+    out = []
+    for wid in r.stdout.split():
+        t = subprocess.run(["xdotool", "getwindowname", wid], env=ENV,
+                           capture_output=True, text=True)
+        if t.returncode == 0:
+            out.append((wid, t.stdout.rstrip("\n")))
+    return out
+
+
+def stop_app():
+    """Kill the app's Wine processes; wine-webapp-run starts it again."""
+    try:
+        open(RESTART, "w").close()  # a restart, not the user closing the app
+    except OSError:
+        pass
+    subprocess.run(["pkill", "-9", "-x", "wineserver"])
+
+
+def main():
+    if os.geteuid() != 0:
+        sys.exit("wine-webapp-login: run as root")
+    with open(CREDENTIALS) as f:
+        cred = json.load(f)
+    os.unlink(CREDENTIALS)
+    login_re = re.compile(os.environ.get("WEBAPP_LOGIN_WINDOW", r"^$a"))
+    main_re = re.compile(os.environ.get("WEBAPP_MAIN_WINDOW", r"^$a"))
+    expect = cred.get("expect_title", "")
+    if not os.access(SCRIPT, os.X_OK):
+        status("failed", f"{SCRIPT} missing")
+        return 1
+    filled = None      # id of the login window we already filled
+    filled_at = 0.0
+    failed = False
+    status("waiting")
+    while True:
+        wins = windows()
+        login = next((w for w, t in wins if login_re.search(t)), None)
+        main_title = next((t for _, t in wins if main_re.search(t)), None)
+        if main_title is not None and expect and expect not in main_title:
+            status("mismatch", "signed in as someone else; restarting the app")
+            stop_app()
+            filled, failed = None, False
+        elif login is None:
+            if filled is not None and main_title is not None:
+                status("ok")
+                filled = None
+        elif login != filled:
+            if not failed:
+                status("filling")
+                env = dict(ENV, LOGIN_WINDOW=login, LOGIN_USER=cred["user"],
+                           LOGIN_PASSWORD=cred["password"])
+                r = subprocess.run([SCRIPT], env=env)
+                filled, filled_at = login, time.monotonic()
+                if r.returncode != 0:
+                    failed = True
+                    status("failed", f"login script exited {r.returncode}")
+        elif not failed and time.monotonic() - filled_at > 20:
+            # Still open 20 s after filling: the app didn't accept the login.
+            failed = True
+            status("failed", "the login window is still open")
+        time.sleep(2)
+
+if __name__ == "__main__":
+    sys.exit(main())

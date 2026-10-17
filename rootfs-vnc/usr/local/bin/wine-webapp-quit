@@ -1,0 +1,18 @@
+#!/bin/sh
+# End the session gracefully (the broker runs it before stopping a container):
+# tell the supervisor not to restart the app, let the app's own quit script
+# close it the way a user would (/etc/wine-webapp/quit, optional), and wait up
+# to WEBAPP_QUIT_SECONDS for Wine to exit. Exit 0 when the app is gone.
+set -u
+mkdir -p /run/wine-webapp
+touch /run/wine-webapp/stopping
+export DISPLAY=:1
+if [ -x /etc/wine-webapp/quit ]; then
+  runuser -u webapp -- /etc/wine-webapp/quit || echo "wine-webapp-quit: the app's quit script failed" >&2
+fi
+i=0
+while pgrep -x wineserver >/dev/null; do
+  i=$((i + 1))
+  [ "$i" -le "${WEBAPP_QUIT_SECONDS:-60}" ] || { echo "wine-webapp-quit: the app is still running" >&2; exit 1; }
+  sleep 1
+done

@@ -12,6 +12,7 @@ fixes we need but upstream hasn't shipped yet.
 | If you want to … | Read |
 | --- | --- |
 | Package an application | [`docs/app-contract.md`](docs/app-contract.md) |
+| Serve several users, each signed in to the app as themselves | [`docs/broker.md`](docs/broker.md) |
 | Pick an image tag, cut a release, keep apps current | [`docs/releases.md`](docs/releases.md) |
 | Choose or add a browser front end | [`docs/frontends.md`](docs/frontends.md) |
 | Know what we change in Wine, and why | [`docs/wine-patches.md`](docs/wine-patches.md) |
@@ -56,6 +57,7 @@ the build fails at the first Wine start (`wine-webapp-init-prefix`), seen
 | `build/build-wine-dlls.sh` | Builds only the patched 32-bit Wine modules from the fork |
 | `rootfs-base/` | App contract scripts and default prefix hooks |
 | `rootfs-vnc/` | TigerVNC + noVNC front end, gateway with the window list |
+| `broker/` | Session broker: one container per signed-in user ([`docs/broker.md`](docs/broker.md)) |
 | `examples/notepad/` | Smallest app image; also the smoke test |
 | `tests/smoke.sh` | Headless smoke test of an app image (gateway, Wine desktop, window) |
 | `.github/workflows/image.yml` | Build, smoke test, publish to GHCR ([`docs/releases.md`](docs/releases.md)) |

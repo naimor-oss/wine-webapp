@@ -73,6 +73,10 @@ The front end paints the X root window instead (`hsetroot`): the app image's
 hooks"). `wine-webapp-init-prefix` gives the Wine desktop the same colour, so
 the hand-over from start-up screen to app doesn't flash.
 
+Behind the session broker (`WEBAPP_EXIT_ENDS_SESSION=1`) the root shows the
+colour only: the browser is on the broker's signing-in page while the app
+starts, and quitting ends the session, where "starting" would be wrong.
+
 The splash goes on the X root only, not as a Windows wallpaper: tried
 2026-10-05, Wine painted the wallpaper over the app's window after a restart,
 and a "starting" screen would stay visible behind every window.

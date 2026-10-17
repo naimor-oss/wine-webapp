@@ -39,7 +39,7 @@ there is nothing to copy).
 | `WEBAPP_PAPER` | `Letter` | Paper size of the PDF printer (a CUPS `PageSize`, e.g. `A4`). See [`frontends.md`](frontends.md), "Printing". |
 | `WEBAPP_PRINTS_KEEP_HOURS` | `24` | How long prints stay available to the browser before they are deleted. |
 | `WEBAPP_NAME` | file name of `APP_EXE` | Name of the browser tab, and of the app when a user installs it from the browser. |
-| `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen and of the Wine desktop. `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
+| `WEBAPP_BACKGROUND` | `#333333` | Colour of the start-up screen, the Wine desktop and the page around them (signing in, closed).  `wine-webapp-init-prefix` sets the desktop colour, so set this before running it in the app image. |
 
 ## Build-time hooks
 
@@ -67,7 +67,7 @@ they need no re-run:
 
 | Location | What happens |
 | --- | --- |
-| `/etc/wine-webapp/splash.png` | Start-up screen: shown centred on `WEBAPP_BACKGROUND` while the app starts, and again after the user quits until it is back. Without it, the screen is plain `WEBAPP_BACKGROUND`. Say "starting" on it: it shows only then. |
+| `/etc/wine-webapp/splash.png` | Start-up screen: shown centred on `WEBAPP_BACKGROUND` while the app starts, and again after the user quits until it is back. Without it, the screen is plain `WEBAPP_BACKGROUND`. Say "starting" on it: it shows only then. Not shown with `WEBAPP_EXIT_ENDS_SESSION=1`, where quitting ends the session. |
 | `/etc/wine-webapp/icons/icon-N.png` | Square icons, N pixels wide, for the browser tab and the installed app. Browsers want at least `icon-192.png` and `icon-512.png` before they offer to install. |
 | `/etc/wine-webapp/print.d/*` | Print steps: run on every print, in name order, before it reaches the browser (rename it, stamp it, copy it somewhere). Contract in [`frontends.md`](frontends.md), "Printing". |
 
@@ -130,3 +130,22 @@ locks are visible across containers on a local Linux file system, so file-share
 databases that rely on Windows locking keep working;
 [`tools/locktest`](../tools/locktest/) checks this on a given host and storage.
 Network file systems (SMB, NFS) are not validated.
+
+## Login (with the session broker)
+
+Behind the session broker ([`broker.md`](broker.md)) the app's own login
+window is filled for the signed-in user. The app image supplies:
+
+| What | Meaning |
+| --- | --- |
+| `/etc/wine-webapp/login` | executable, run as root once each time the login window appears, with `LOGIN_WINDOW` (X window id), `LOGIN_USER`, `LOGIN_PASSWORD` and `DISPLAY` set. Exit non-zero if it can't fill the form. |
+| `WEBAPP_LOGIN_WINDOW` | regular expression matching the login window's title |
+| `WEBAPP_MAIN_WINDOW` | regular expression matching the main window's title; with the users file's `expect_title`, it tells whether the right user is signed in |
+| `/etc/wine-webapp/quit` | optional, run as user `webapp` to close the app the way a user would before a session is stopped |
+| `WEBAPP_EXIT_ENDS_SESSION=1` | when the app exits cleanly (the user closed it), end the session instead of starting the app again: the page then offers to open it again. Restarts after a crash or a wrong-user sign-in are unaffected |
+
+`wine-webapp-ui` helps write the login hook: `wait REGEX`, `click WIN X Y`
+(relative to the window, which moves with the screen size), `type TEXT
+[DELAY_MS]`. Click into each field rather than relying on Tab, and type
+slowly: apps often check a field when it is left and drop keys meanwhile.
+The hook gets one attempt per appearance of the window.
