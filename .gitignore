@@ -17,3 +17,6 @@ test-results/*.log
 # Build outputs
 dist/
 tools/*/*.exe
+
+# test programs are built locally (tools/*/README.md)
+tools/**/*.exe
