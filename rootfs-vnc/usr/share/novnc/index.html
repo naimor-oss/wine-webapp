@@ -224,10 +224,10 @@ let toastTimer;
 function hideToast() { toast.hidden = true; clearTimeout(toastTimer); }
 function showToast(p) {
   const link = printLink(p, () => { hideToast(); focusApp(); });
-  link.textContent = "Open";
+  link.textContent = p.kind === "xlsx" ? "Download" : "Open";
   const close = Object.assign(document.createElement("button"), { type: "button", textContent: "✕", title: "Dismiss" });
   close.addEventListener("click", () => { hideToast(); focusApp(); });
-  toast.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Printed: " + p.title }), link, close);
+  toast.replaceChildren(Object.assign(document.createElement("span"), { textContent: (p.kind === "xlsx" ? "Spreadsheet: " : "Printed: ") + p.title }), link, close);
   toast.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(hideToast, 20000);

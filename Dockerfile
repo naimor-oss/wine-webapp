@@ -51,8 +51,10 @@ RUN --mount=from=winesrc,target=/src/wine \
 
 # --- helper programs run under Wine (same mingw toolchain)
 FROM winedlls AS tools
-COPY tools/winlist/winlist.c /src/
-RUN mkdir -p /out && i686-w64-mingw32-gcc -O2 -Wall -o /out/winlist.exe /src/winlist.c
+COPY tools/winlist/winlist.c tools/xlstub/xlstub.c /src/
+RUN mkdir -p /out && i686-w64-mingw32-gcc -O2 -Wall -o /out/winlist.exe /src/winlist.c \
+ && i686-w64-mingw32-gcc -O2 -Wall -shared -Wl,--kill-at -o /out/xlstub.dll /src/xlstub.c \
+      -lole32 -loleaut32 -luuid
 
 # --- base: Wine + app contract
 FROM ${DEBIAN} AS base
@@ -89,7 +91,7 @@ RUN dpkg --add-architecture i386 \
  && apt-get purge -y gnupg wget && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/*
 COPY --from=winedlls /out/ /opt/wine-stable/
-COPY --from=tools /out/winlist.exe /usr/local/lib/wine-webapp/
+COPY --from=tools /out/winlist.exe /out/xlstub.dll /usr/local/lib/wine-webapp/
 
 RUN useradd -m -u 1000 -s /bin/bash webapp
 ENV PATH=/opt/wine-stable/bin:$PATH \

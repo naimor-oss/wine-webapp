@@ -62,6 +62,7 @@ the build fails at the first Wine start (`wine-webapp-init-prefix`), seen
 | `tests/smoke.sh` | Headless smoke test of an app image (gateway, Wine desktop, window) |
 | `.github/workflows/image.yml` | Build, smoke test, publish to GHCR ([`docs/releases.md`](docs/releases.md)) |
 | `tools/locktest/` | Cross-container Windows file-lock test |
+| `tools/xlstub/` | Excel stand-in: an app's "export to Excel" becomes an `.xlsx` download |
 | `tools/winlist/` | List / raise windows on the Wine desktop; built into the image |
 | `docs/` | Contract, front ends, Wine patches |
 

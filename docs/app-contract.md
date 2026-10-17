@@ -60,6 +60,7 @@ USER root
 | --- | --- |
 | `/etc/wine-webapp/prefix.d/*.reg` | Imported with `regedit`, in name order. |
 | `/etc/wine-webapp/prefix.d/*.sh` | Run with `sh` as `webapp`, in name order, `WINEPREFIX` set. |
+| `/usr/local/share/wine-webapp/excel-stub.sh` | Copy into `prefix.d/` to give the app an Excel stand-in whose sheets download as `.xlsx` ([`frontends.md`](frontends.md), "Excel output"). |
 | `/etc/wine-webapp/fonts/*.ttf, *.otf, *.ttc` | Copied to `C:\windows\Fonts` and registered under their full names, the way a Windows installer does. Some apps check the registry, not just the folder. |
 
 Two more files are read by the front end, not by `wine-webapp-init-prefix`, so
