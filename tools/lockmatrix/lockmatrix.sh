@@ -5,15 +5,19 @@
 #   tools/lockmatrix/lockmatrix.sh TOPOLOGY [IMAGE]
 #     same-wineserver   two processes in one container (one wineserver)
 #     two-containers    one container each, same Docker named volume
-#     cifs              one container each, same SMB share mounted with CIFS
-#                       (a Samba container serves it; needs Docker on Linux
-#                       with the cifs kernel module)
+#     cifs              one container each, the same SMB share mounted with
+#                       CIFS once per container (nosharesock): each has its
+#                       own SMB session, so every conflict comes from the server
+#     cifs-shared-mount one container each on ONE CIFS mount of the share, where
+#                       the local kernel can catch a conflict first; for comparison
+#                     (both cifs topologies: a Samba container serves the share;
+#                     needs Docker on Linux with the cifs kernel module)
 #
 # Prints one line per case: the case, what Windows gives, what Wine gave.
 # Exit 0 when every case matches Windows.
 set -eu
 
-topo=${1:?usage: lockmatrix.sh same-wineserver|two-containers|cifs [IMAGE]}
+topo=${1:?usage: lockmatrix.sh same-wineserver|two-containers|cifs|cifs-shared-mount [IMAGE]}
 image=${2:-wine-webapp:vnc}
 here=$(cd "$(dirname "$0")" && pwd)
 exe=$here/lockmatrix.exe
@@ -26,7 +30,7 @@ b=$a
 
 cleanup() {
   docker rm -f "$id-a" "$id-b" "$id-smb" >/dev/null 2>&1 || true
-  docker volume rm "$vol" >/dev/null 2>&1 || true
+  docker volume rm "$vol" "$vol-b" >/dev/null 2>&1 || true
   docker network rm "$net" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -47,7 +51,7 @@ case $topo in
     start "$id-a" "$vol:/shared"
     start "$id-b" "$vol:/shared"
     b=$id-b ;;
-  cifs)
+  cifs|cifs-shared-mount)
     # Samba stand-in for a Windows file server. Docker mounts the share for
     # the volume in the host's namespace, so it goes to the server's address.
     docker run -d --name "$id-smb" --network "$net" debian:trixie-slim sh -c '
@@ -61,11 +65,19 @@ case $topo in
       i=$((i + 1)); [ "$i" -lt 120 ] || { echo "samba did not start" >&2; exit 2; }; sleep 1
     done
     sleep 2
-    docker volume create --driver local --opt type=cifs \
-      --opt "device=//$smb_ip/share" \
-      --opt "o=guest,uid=1000,gid=1000,vers=3.0,${CIFS_OPTS:-cache=strict}" "$vol" >/dev/null
+    cifs_volume() {   # cifs_volume NAME: the share as a Docker volume, its own SMB session
+      docker volume create --driver local --opt type=cifs \
+        --opt "device=//$smb_ip/share" \
+        --opt "o=guest,uid=1000,gid=1000,vers=3.0,nosharesock,${CIFS_OPTS:-cache=strict}" "$1" >/dev/null
+    }
+    cifs_volume "$vol"
     start "$id-a" "$vol:/shared"
-    start "$id-b" "$vol:/shared"
+    if [ "$topo" = cifs ]; then
+      cifs_volume "$vol-b"
+      start "$id-b" "$vol-b:/shared"
+    else
+      start "$id-b" "$vol:/shared"
+    fi
     b=$id-b ;;
   *) echo "unknown topology: $topo" >&2; exit 2 ;;
 esac
